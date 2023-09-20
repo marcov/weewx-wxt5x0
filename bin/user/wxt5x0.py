@@ -54,45 +54,33 @@ The supervisor message controls error messaging and heater.
 # also, REC does not know that rain_total is cumulative, not delta
 # note that 'hail' (hits/area) is not cumulative like 'rain_total' (length)
 
-from __future__ import with_statement
+import sys
 import time
 import socket
-import datetime
 import pprint
 
 import weewx.drivers
 
-try:
-    # New-style weewx logging
-    #import weeutil.logger
-    import logging
+# New-style weewx logging
+# import weeutil.logger
+import logging
 
-    log = logging.getLogger(__name__)
+log = logging.getLogger(__name__)
 
-    def logdbg(msg):
-        log.debug(msg)
 
-    def loginf(msg):
-        log.info(msg)
+def logdbg(msg):
+    # print(msg)
+    log.debug(msg)
 
-    def logerr(msg):
-        log.error(msg)
 
-except ImportError:
-    # Old-style weewx logging
-    import syslog
+def loginfo(msg):
+    # print(msg)
+    log.info(msg)
 
-    def logmsg(level, msg):
-        syslog.syslog(level, "wxt5x0: %s" % msg)
 
-    def logdbg(msg):
-        logmsg(syslog.LOG_DEBUG, msg)
-
-    def loginf(msg):
-        logmsg(syslog.LOG_INFO, msg)
-
-    def logerr(msg):
-        logmsg(syslog.LOG_ERR, msg)
+def logerr(msg):
+    # print(msg)
+    log.error(msg)
 
 
 DRIVER_NAME = "WXT5x0"
@@ -132,19 +120,75 @@ class Station(object):
         self.crc_prefix = None
         self.terminator = b""
         self.address = address
-        self.timeout = 3  # seconds
         self.interface = interface
 
-    def open(self):
+    def setup(self):
+        loginfo("Setting up station")
         self.interface.open()
-        pass
+        time.sleep(1)
+
+        # Pause auto mode
+        loginfo("Setting polled mode")
+        self.set_polled_mode()
+
+        # Flush buffer
+        loginfo("Flushing interface")
+        self.interface.flush()
+
+        self.setup_wind_sensor()
+        self.setup_rain_sensor()
+        self.setup_thp_sensors()
+
+        # Resume auto mode
+        loginfo("Setting auto mode")
+        self.set_automatic_mode()
+        time.sleep(1)
+
+    def setup_wind_sensor(self):
+        loginfo("Setting up wind sensor")
+
+        # turn on average and max direction and speed
+        self.get_data(b"WU,R=0110110001101100")
+        time.sleep(1)
+
+        # set update and averaging interval to 2 seconds for initial readings
+        self.get_data(b"WU,I=2,A=2")
+        time.sleep(1)
+
+        # set units to MPH [for KMH (U=K)], direction correction to 0, response format type T
+        self.get_data(b"WU,U=S,D=0,N=T")
+        time.sleep(1)
+
+    def setup_rain_sensor(self):
+        loginfo("Setting up rain sensor")
+
+        # turn on rain/hail amount and intensity
+        self.get_data(b"RU,R=1011010010110100")
+        time.sleep(1)
+
+        self.get_data(b"RU,R=1111111111111111")
+        time.sleep(1)
+
+        # set units to imperial, manual reset of the counters
+        # NMEA: nmea0183WriteLineToStation: Expect:0RU,I=60,U=I,M=T,S=I,Z=M, Recv:0RU,I=60,U=I,S=I,M=T,Z=M
+        self.get_data(b"RU,I=60,U=I,S=I,M=T,Z=M")
+        time.sleep(1)
+
+    def setup_thp_sensors(self):
+        loginfo("Setting up temperature, humidity, pressure sensors")
+
+        # turn on air pressure, temperature and humidity
+        self.get_data(b"TU,R=1101000011010000")
+
+        # set pressure units to in/Hg, temperature units to Fahrenheit
+        self.get_data(b"TU,P=I,T=F")
 
     def close(self):
         self.interface.close()
         pass
 
     def __enter__(self):
-        self.open()
+        self.setup()
         return self
 
     def __exit__(self, *_):
@@ -154,11 +198,12 @@ class Station(object):
         cmd = b"%d%s%s" % (self.address, cmd, self.terminator)
         self.interface.write(cmd)
 
-    def get_data(self, cmd):
+    def get_data(self, cmd=None):
         #        if self.crc_prefix:
         #            cmd = cmd.replace('R', 'r')
         #            cmd = "%sxxx" % self.crc_prefix
-        self.send_cmd(cmd)
+        if cmd:
+            self.send_cmd(cmd)
         line = self.interface.readline()
         if line:
             line.replace(b"\x00", b"")  # eliminate any NULL characters
@@ -175,6 +220,7 @@ class Station(object):
         return self.get_data(b"")
 
     def reset(self):
+        loginfo("reset")
         self.send_cmd(b"XZ")
 
     def precip_counter_reset(self):
@@ -184,13 +230,15 @@ class Station(object):
         self.send_cmd(b"XZRI")
 
     def measurement_reset(self):
-        self.send_cmd(b"XZM")
+        loginfo("measurement reset")
+        self.get_data(b"XZM")
 
     def set_automatic_mode(self):
-        self.send_cmd(b"XU,M=R")
+        loginfo("set auto mode")
+        self.get_data(b"XU,M=A")
 
     def set_polled_mode(self):
-        self.send_cmd(b"XU,M=P")
+        self.get_data(b"XU,M=P")
 
     def get_wind(self):
         return self.get_data(b"R1")
@@ -288,6 +336,10 @@ class Station(object):
                         if unit != b"#":  # '#' indicates invalid data
                             value = float(vstr[:-1])
                             value = Station.convert(obs, value, unit)
+                        else:
+                            loginfo(
+                                f"Invalid data for observation {obs}: {part} - {abbr} {vstr}"
+                            )
                     except ValueError as e:
                         logerr("parse failed for %s (%s):%s" % (abbr, vstr, e))
                     parsed[obs] = value
@@ -312,7 +364,7 @@ class Station(object):
             elif unit == b"F":
                 value = (value - 32.0) * 5.0 / 9.0
             else:
-                loginf("unknown unit '%s' for %s" % (unit, obs))
+                loginfo("unknown unit '%s' for %s" % (unit, obs))
         elif "wind_speed" in obs:
             # [U] speed M=m/s K=km/h S=mph N=knots
             if unit == b"M":
@@ -324,7 +376,7 @@ class Station(object):
             elif unit == b"N":
                 value *= MPS_PER_KNOT
             else:
-                loginf("unknown unit '%s' for %s" % (unit, obs))
+                loginfo("unknown unit '%s' for %s" % (unit, obs))
         elif "pressure" in obs:
             # [P] pressure H=hPa P=pascal B=bar M=mmHg I=inHg
             if unit == b"H":
@@ -338,7 +390,7 @@ class Station(object):
             elif unit == b"I":
                 value *= MBAR_PER_INHG
             else:
-                loginf("unknown unit '%s' for %s" % (unit, obs))
+                loginfo("unknown unit '%s' for %s" % (unit, obs))
         elif "rain" in obs:
             # rain: accumulation duration intensity intensity_peak
             # [U] precip M=(mm s mm/h) I=(in s in/h)
@@ -350,7 +402,7 @@ class Station(object):
             elif unit == b"s":
                 pass  # already seconds
             else:
-                loginf("unknown unit '%s' for %s" % (unit, obs))
+                loginfo("unknown unit '%s' for %s" % (unit, obs))
         elif "hail" in obs:
             # hail: accumulation duration intensity intensity_peak
             # [S] hail M=(hits/cm^2 s hits/cm^2h) I=(hits/in^2 s hits/in^2h)
@@ -363,7 +415,7 @@ class Station(object):
             elif unit == b"s":
                 pass  # already seconds
             else:
-                loginf("unknown unit '%s' for %s" % (unit, obs))
+                loginfo("unknown unit '%s' for %s" % (unit, obs))
         return value
 
 
@@ -394,12 +446,15 @@ class SerialInterface(Interface):
 
     def readline(self):
         line = self.serial.readline()
-        logdbg(f"readline [{len(line)}]")
+        logdbg(f"readline [{len(line)}] - {line}")
         return line
+
+    def flush(self):
+        pass
 
 
 class TcpInterface(Interface):
-    def __init__(self, host, port, timeout):
+    def __init__(self, host, port, timeout=20):
         super().__init__()
         self.host = host
         self.port = port
@@ -408,40 +463,60 @@ class TcpInterface(Interface):
         )
         self.timeout = timeout
         self.socket.settimeout(self.timeout)
-        self.socketfile = self.socket.makefile()
+        self.recv_buffer = b""
 
     def open(self):
+        loginfo(f"Connecting to {self.host}:{self.port}")
         try:
             self.socket.connect((self.host, self.port))
         except Exception as e:
             logerr(f"Unable to connect to TCP host {self.host}:{self.port}: {e}")
             raise
-        pass
+        loginfo(f"Connected!")
 
     def write(self, payload: bytes):
         logdbg(f"write [{len(payload)}]")
         self.socket.sendall(payload)
-        pass
 
     def readline(self):
-        try:
-            line = self.socketfile.readline()
-            logdbg(f"readline [{len(line)}]")
+        # Fixme: use correct terminator for station proto.
+        term = b"\r\n"
 
+        pos = self.recv_buffer.find(term)
+        if pos == -1:
             try:
-                bline = bytes(line, encoding="utf-8")
-            except UnicodeDecodeError as e:
-                logerr(f"Failed to encode line {line} to bytes: {e}")
-                bline= b""
-            return bline
+                logdbg("recv ...")
+                self.recv_buffer += self.socket.recv(512)
+                logdbg(f"recv [{len(self.recv_buffer)}]")
+            except TimeoutError:
+                logerr(f"readline timed out")
+                return b""
 
-        except TimeoutError:
-            logerr(f"readline timed out")
-            return b""
+            pos = self.recv_buffer.find(term)
+            if pos == -1:
+                return b""
+
+        line = self.recv_buffer[:pos]
+        self.recv_buffer = self.recv_buffer[pos + 2 :]
+
+        logdbg(
+            f"readline [{len(line)}] - line {line} - pos {pos} - buf {self.recv_buffer}"
+        )
+        return line
 
     def close(self):
         self.socket.close()
-        pass
+
+    def flush(self):
+        r = b"1"
+        try:
+            self.socket.settimeout(3)
+            while r:
+                r = self.socket.recv(512)
+        except TimeoutError:
+            logdbg("Flushed")
+        finally:
+            self.socket.settimeout(self.timeout)
 
 
 class StationAscii(Station):
@@ -558,7 +633,7 @@ class WXT5x0Driver(weewx.drivers.AbstractDevice):
     }
 
     def __init__(self, **stn_dict):
-        loginf("driver version is %s" % DRIVER_VERSION)
+        loginfo("driver version is %s" % DRIVER_VERSION)
         self._model = stn_dict.get("model", "WXT520")
         self._max_tries = int(stn_dict.get("max_tries", 5))
         self._retry_wait = int(stn_dict.get("retry_wait", 10))
@@ -588,14 +663,14 @@ class WXT5x0Driver(weewx.drivers.AbstractDevice):
             host = stn_dict.get("net_host")
             port = stn_dict.get("net_port", 0)
             port = int(port)
-            interface = TcpInterface(host, port, 10)
+            interface = TcpInterface(host, port)
         else:
             raise RuntimeError(f"Not a valid interface {iface_name}")
 
         address = int(stn_dict.get("address", 0))
         self._station = sta_cls(interface, address)
 
-        self._station.open()
+        self._station.setup()
 
     def closePort(self):
         self._station.close()
@@ -605,13 +680,15 @@ class WXT5x0Driver(weewx.drivers.AbstractDevice):
         return self._model
 
     def genLoopPackets(self):
-        self._station.reset()
-        self._station.set_polled_mode()
+        s = self._station
 
         while True:
             for cnt in range(self._max_tries):
                 try:
-                    raw = self._station.get_composite()
+                    # raw = self._station.get_composite()
+                    # raw = self._station.get_data()
+                    raw = s.get_data()
+                    logdbg(f"ascii: {raw}")
                     logdbg("raw: %s" % _fmt(raw))
                     data = Station.parse(raw)
                     logdbg("parsed: %s" % data)
@@ -658,10 +735,10 @@ class WXT5x0Driver(weewx.drivers.AbstractDevice):
     @staticmethod
     def _delta_rain(rain, last_rain):
         if last_rain is None:
-            loginf("skipping rain measurement of %s: no last rain" % rain)
+            loginfo("skipping rain measurement of %s: no last rain" % rain)
             return None
         if rain < last_rain:
-            loginf(
+            loginfo(
                 "rain counter wraparound detected: new=%s last=%s" % (rain, last_rain)
             )
             return rain
@@ -674,18 +751,31 @@ class WXT5x0Driver(weewx.drivers.AbstractDevice):
 # PYTHONPATH=bin python bin/user/wxt5x0.py
 
 if __name__ == "__main__":
+    print("Staring up ...")
+
+    console = logging.StreamHandler(sys.stdout)
+    console.setLevel(logging.DEBUG)
+    # set a format which is simpler for console use
+    formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+    # tell the handler to use this format
+    console.setFormatter(formatter)
+    # add the handler to the root logger
+    log.addHandler(console)
+
+    logerr("log err test")
+
     import optparse
-    import syslog
 
     usage = """%prog [options] [--debug] [--help]"""
-    syslog.openlog("wxt5x0", syslog.LOG_PID | syslog.LOG_CONS)
-    syslog.setlogmask(syslog.LOG_UPTO(syslog.LOG_INFO))
     parser = optparse.OptionParser(usage=usage)
     parser.add_option("--version", action="store_true", help="display driver version")
     parser.add_option(
         "--debug",
         action="store_true",
         help="display diagnostic information while running",
+        default=False,
     )
     parser.add_option("--protocol", help="ascii, nmea, or sdi12", default="ascii")
     parser.add_option(
@@ -717,12 +807,13 @@ if __name__ == "__main__":
 
     (options, args) = parser.parse_args()
 
+    log.setLevel(logging.DEBUG if options.debug else logging.INFO)
+    logdbg("log dbg test")
+    loginfo("log info test")
+
     if options.version:
         print("%s driver version %s" % (DRIVER_NAME, DRIVER_VERSION))
         exit(1)
-
-    if options.debug:
-        syslog.setlogmask(syslog.LOG_UPTO(syslog.LOG_DEBUG))
 
     if options.test_crc:
         print("string: '%s'" % options.test_crc)
@@ -742,7 +833,7 @@ if __name__ == "__main__":
     if options.interface == "serial":
         interface = SerialInterface(options.serial_port, options.baud, 3)
     elif options.interface == "net":
-        interface = TcpInterface(options.net_host, options.net_port, 10)
+        interface = TcpInterface(options.net_host, options.net_port)
     else:
         raise RuntimeError(f"Not a valid interface {options.interface}")
 
@@ -758,13 +849,13 @@ if __name__ == "__main__":
         elif options.get_composite:
             print("%s" % s.get_composite().strip())
         else:
-            s.reset()
-            s.set_polled_mode()
+            loginfo("Waiting for data ...")
             while True:
-                data = s.get_composite().strip()
+                # data = s.get_composite().strip()
+                data = s.get_data()
                 parsed = Station.parse(data)
                 if parsed:
-                    print(f"{datetime.datetime.now()}: {pprint.pformat(parsed)}")
+                    loginfo(f"{pprint.pformat(parsed)}")
                 else:
-                    print(f"{datetime.datetime.now()}: [no data]")
+                    loginfo(f"[no parsable data]")
                 time.sleep(options.poll_interval)
