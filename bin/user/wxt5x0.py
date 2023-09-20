@@ -54,16 +54,14 @@ The supervisor message controls error messaging and heater.
 # also, REC does not know that rain_total is cumulative, not delta
 # note that 'hail' (hits/area) is not cumulative like 'rain_total' (length)
 
+import logging
+import pprint
+import socket
 import sys
 import time
-import socket
-import pprint
 
 import weewx.drivers
 
-# New-style weewx logging
-# import weeutil.logger
-import logging
 
 log = logging.getLogger(__name__)
 
@@ -186,7 +184,7 @@ class Station(object):
 
         # set pressure units to in/Hg, temperature units to Fahrenheit
         #
-        #Nope, set P in hPA and T in C
+        # Nope, set P in hPA and T in C
         self.get_data(b"TU,P=H,T=C")
 
     def close(self):
@@ -471,21 +469,29 @@ class TcpInterface(Interface):
         super().__init__()
         self.host = host
         self.port = port
+        self.timeout = timeout
+        self.recv_buffer = b""
+        self.socket = None  # type: socket.socket
+
+    def open(self):
         self.socket = socket.socket(
             socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP
         )
-        self.timeout = timeout
         self.socket.settimeout(self.timeout)
-        self.recv_buffer = b""
-
-    def open(self):
         loginfo(f"Connecting to {self.host}:{self.port}")
-        try:
-            self.socket.connect((self.host, self.port))
-        except Exception as e:
-            logerr(f"Unable to connect to TCP host {self.host}:{self.port}: {e}")
-            raise
-        loginfo(f"Connected!")
+        conn_ex = Exception()
+        for _ in range(10):
+            try:
+                self.socket.connect((self.host, self.port))
+                loginfo(f"Connected!")
+                break
+            except Exception as e:
+                logerr(f"Unable to connect to TCP host {self.host}:{self.port}: {e}")
+                conn_ex = e
+                time.sleep(1)
+
+        else:
+            raise ExceptionGroup("Failed to connect", [conn_ex])
 
     def write(self, payload: bytes):
         logdbg(f"write [{len(payload)}]")
@@ -502,7 +508,9 @@ class TcpInterface(Interface):
                 self.recv_buffer += self.socket.recv(512)
                 logdbg(f"recv [{len(self.recv_buffer)}]")
             except TimeoutError:
-                logerr(f"readline timed out")
+                logerr(f"readline timed out ... attempting reconnect")
+                self.close()
+                self.open()
                 return b""
 
             pos = self.recv_buffer.find(term)
