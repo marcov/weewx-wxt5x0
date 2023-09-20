@@ -156,7 +156,9 @@ class Station(object):
         time.sleep(1)
 
         # set units to MPH [for KMH (U=K)], direction correction to 0, response format type T
-        self.get_data(b"WU,U=S,D=0,N=T")
+
+        # Nope, set to m/s to match METRICWX
+        self.get_data(b"WU,U=M,D=0,N=T")
         time.sleep(1)
 
     def setup_rain_sensor(self):
@@ -171,7 +173,9 @@ class Station(object):
 
         # set units to imperial, manual reset of the counters
         # NMEA: nmea0183WriteLineToStation: Expect:0RU,I=60,U=I,M=T,S=I,Z=M, Recv:0RU,I=60,U=I,S=I,M=T,Z=M
-        self.get_data(b"RU,I=60,U=I,S=I,M=T,Z=M")
+        #
+        # Nope, set to metric to match METRICWX (mm, mm/h)
+        self.get_data(b"RU,I=60,U=M,S=M,M=T,Z=M")
         time.sleep(1)
 
     def setup_thp_sensors(self):
@@ -181,7 +185,9 @@ class Station(object):
         self.get_data(b"TU,R=1101000011010000")
 
         # set pressure units to in/Hg, temperature units to Fahrenheit
-        self.get_data(b"TU,P=I,T=F")
+        #
+        #Nope, set P in hPA and T in C
+        self.get_data(b"TU,P=H,T=C")
 
     def close(self):
         self.interface.close()
@@ -356,6 +362,11 @@ class Station(object):
         value: float
         unit: a one character long byte-string
         """
+        #
+        # From the docs:
+        # The difference between METRICWX, and METRIC is that the former uses
+        # mm instead of cm for rain, and m/s instead of km/hr for wind speed
+        #
         # convert from the indicated units to the weewx METRICWX unit system
         if "temperature" in obs:
             # [T] temperature C=celsius F=fahrenheit
@@ -425,6 +436,8 @@ class Interface(object):
 
 
 class SerialInterface(Interface):
+    DEFAULT_PORT = "/dev/ttyUSB0"
+
     def __init__(self, port, baudrate, timeout):
         super().__init__()
         self.port = port
@@ -611,8 +624,6 @@ class WXT5x0ConfigurationEditor(weewx.drivers.AbstractConfEditor):
 
 
 class WXT5x0Driver(weewx.drivers.AbstractDevice):
-    DEFAULT_PORT = "/dev/ttyUSB0"
-
     # map sensor names to schema names
     DEFAULT_MAP = {
         "windDir": "wind_dir_avg",
@@ -657,7 +668,7 @@ class WXT5x0Driver(weewx.drivers.AbstractDevice):
         if iface_name == "ascii":
             baud = sta_cls.DEFAULT_BAUD
             baud = int(stn_dict.get("baud", baud))
-            port = stn_dict.get("port", WXT5x0Driver.DEFAULT_PORT)
+            port = stn_dict.get("port", SerialInterface.DEFAULT_PORT)
             interface = SerialInterface(port, baud, 3)
         elif iface_name == "net":
             host = stn_dict.get("net_host")
@@ -724,6 +735,7 @@ class WXT5x0Driver(weewx.drivers.AbstractDevice):
             packet[obs] = data[name]
         if packet:
             packet["dateTime"] = int(time.time() + 0.5)
+            # us = unit system
             packet["usUnits"] = weewx.METRICWX
         if "rain_total" in packet:
             packet["rain"] = self._delta_rain(
@@ -781,7 +793,7 @@ if __name__ == "__main__":
     parser.add_option(
         "--serial_port",
         help="serial port to which the station is connected",
-        default=WXT5x0Driver.DEFAULT_PORT,
+        default=SerialInterface.DEFAULT_PORT,
     )
     parser.add_option("--baud", type=int, help="baud rate", default=19200)
     parser.add_option("--address", type=int, help="device address", default=0)
