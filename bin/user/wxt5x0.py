@@ -305,7 +305,7 @@ class Station(object):
         "Ua": "humidity",
         "Pa": "pressure",
         # aR3: precipitation message
-        "Rc": "rain",
+        "Rc": "rain_accumulation",
         "Rd": "rain_duration",
         "Ri": "rain_intensity",
         "Hc": "hail",
@@ -416,7 +416,7 @@ class Station(object):
                 value *= MBAR_PER_INHG
             else:
                 loginfo("unknown unit '%s' for %s" % (unit, obs))
-        elif "rain" in obs:
+        elif "rain_accumulation" in obs:
             # rain: accumulation duration intensity intensity_peak
             # [U] precip M=(mm s mm/h) I=(in s in/h)
             if unit == "M":
@@ -683,8 +683,7 @@ class WXT5x0ConfigurationEditor(weewx.drivers.AbstractConfEditor):
 
 
 class WXT5x0Driver(weewx.drivers.AbstractDevice):
-    # map sensor names to schema names
-    DEFAULT_MAP = {
+    OBSERVATION_2_MEASURE = {
         "windDir": "wind_dir_avg",
         "windSpeed": "wind_speed_avg",
         "windGustDir": "wind_dir_max",
@@ -692,7 +691,7 @@ class WXT5x0Driver(weewx.drivers.AbstractDevice):
         "outTemp": "temperature",
         "outHumidity": "humidity",
         "pressure": "pressure",
-        "rain_total": "rain",
+        "rain": "rain_accumulation",
         "rainRate": "rain_intensity",
         # Fixme: stormRain units is group_rain, not group_rainrate ...
         # "stormRain": "rain_intensity_peak",
@@ -710,8 +709,6 @@ class WXT5x0Driver(weewx.drivers.AbstractDevice):
         self._max_tries = int(stn_dict.get("max_tries", 5))
         self._retry_wait = int(stn_dict.get("retry_wait", 10))
         self._poll_interval = int(stn_dict.get("poll_interval", 1))
-        self._sensor_map = dict(WXT5x0Driver.DEFAULT_MAP)
-        self.last_rain_total = None
 
         protocol = stn_dict.get("protocol", "ascii").lower()
 
@@ -776,7 +773,9 @@ class WXT5x0Driver(weewx.drivers.AbstractDevice):
 
             except IOError as e:
                 if tries_count >= self._max_tries:
-                    raise weewx.RetriesExceeded(f"Read failed after {tries_count} tries")
+                    raise weewx.RetriesExceeded(
+                        f"Read failed after {tries_count} tries"
+                    )
 
                 logerr(
                     f"Failed attempt {tries_count}/{self._max_tries} to read data: {e}\n"
@@ -786,42 +785,22 @@ class WXT5x0Driver(weewx.drivers.AbstractDevice):
                 time.sleep(self._retry_wait)
 
     def _data_to_packet(self, data: dict) -> dict:
-        # if there is a mapping to a schema name, use it.  otherwise use the
-        # sensor naming native to the hardware.
         packet = dict()
 
-        for key in data:
-            obs = key
-            for field in self._sensor_map:
-                if self._sensor_map[field] == key:
-                    obs = field
-                    break
+        for measure in data:
+            # if there is a mapping, use it. Otherwise use the sensor naming
+            # native to the hardware.
+            if measure in self.OBSERVATION_2_MEASURE:
+                observation = self.OBSERVATION_2_MEASURE[measure]
+                packet[observation] = data[measure]
+            else:
+                packet[measure] = data[measure]
 
-            packet[obs] = data[key]
+        packet["dateTime"] = int(time.time() + 0.5)
+        # us = unit system
+        packet["usUnits"] = weewx.METRICWX
 
-        if packet:
-            packet["dateTime"] = int(time.time() + 0.5)
-            # us = unit system
-            packet["usUnits"] = weewx.METRICWX
-
-        if "rain_total" in packet:
-            packet["rain"] = self._delta_rain(
-                packet["rain_total"], self.last_rain_total
-            )
-            self.last_rain_total = packet["rain_total"]
         return packet
-
-    @staticmethod
-    def _delta_rain(rain, last_rain):
-        if last_rain is None:
-            loginfo("skipping rain measurement of %s: no last rain" % rain)
-            return None
-        if rain < last_rain:
-            loginfo(
-                "rain counter wraparound detected: new=%s last=%s" % (rain, last_rain)
-            )
-            return rain
-        return rain - last_rain
 
 
 # define a main entry point for basic testing of the station without weewx
@@ -844,6 +823,7 @@ if __name__ == "__main__":
     log.addHandler(console)
 
     import optparse
+
     usage = """%prog [options] [--debug] [--help]"""
     parser = optparse.OptionParser(usage=usage)
     parser.add_option("--version", action="store_true", help="display driver version")
