@@ -175,7 +175,7 @@ class Station(object):
         # NMEA: nmea0183WriteLineToStation: Expect:0RU,I=60,U=I,M=T,S=I,Z=M, Recv:0RU,I=60,U=I,S=I,M=T,Z=M
         #
         # Nope, set to metric to match METRICWX (mm, mm/h)
-        self.send_and_receive("RU,I=60,U=M,S=M,M=T,Z=M")
+        self.send_and_receive("RU,I=60,U=M,S=M,M=R,Z=M")
         time.sleep(1)
 
     def setup_thp_sensors(self):
