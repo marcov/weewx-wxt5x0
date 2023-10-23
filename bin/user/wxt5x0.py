@@ -292,7 +292,7 @@ class Station(object):
         c = 0x40 | (crc & 0x3F)
         return a + b + c
 
-    OBSERVATIONS = {
+    MEASURES = {
         # aR1: wind message
         "Dn": "wind_dir_min",
         "Dm": "wind_dir_avg",
@@ -343,8 +343,8 @@ class Station(object):
                 if abbr == "Id":  # skip the information field
                     continue
 
-                obs = Station.OBSERVATIONS.get(abbr)
-                if obs:
+                measure = Station.MEASURES.get(abbr)
+                if measure:
                     value = None
                     unit = None
                     try:
@@ -352,14 +352,14 @@ class Station(object):
                         unit = vstr[-1:]
                         if unit != "#":  # '#' indicates invalid data
                             value = float(vstr[:-1])
-                            value = Station.convert(obs, value, unit)
+                            value = Station.convert(measure, value, unit)
                         else:
                             logwarn(
-                                f"Invalid data for observation {obs}: {part} - {abbr} {vstr}"
+                                f"Invalid data for measure {measure}: {part} - {abbr} {vstr}"
                             )
                     except ValueError as e:
                         logerr("parse failed for %s (%s):%s" % (abbr, vstr, e))
-                    parsed[obs] = value
+                    parsed[measure] = value
 
                 else:
                     logwarn("unknown sensor %s: %s" % (abbr, vstr))
@@ -370,9 +370,9 @@ class Station(object):
         return parsed
 
     @staticmethod
-    def convert(obs, value, unit):
+    def convert(measure, value, unit):
         """Convert units
-        obs: a string, such as 'heating_temperature'
+        measure: a string, such as 'heating_temperature'
         value: float
         unit: a one character long byte-string
         """
@@ -382,15 +382,15 @@ class Station(object):
         # mm instead of cm for rain, and m/s instead of km/hr for wind speed
         #
         # convert from the indicated units to the weewx METRICWX unit system
-        if "temperature" in obs:
+        if "temperature" in measure:
             # [T] temperature C=celsius F=fahrenheit
             if unit == "C":
                 pass  # already C
             elif unit == "F":
                 value = (value - 32.0) * 5.0 / 9.0
             else:
-                loginfo("unknown unit '%s' for %s" % (unit, obs))
-        elif "wind_speed" in obs:
+                loginfo("unknown unit '%s' for %s" % (unit, measure))
+        elif "wind_speed" in measure:
             # [U] speed M=m/s K=km/h S=mph N=knots
             if unit == "M":
                 pass  # already m/s
@@ -401,8 +401,8 @@ class Station(object):
             elif unit == "N":
                 value *= MPS_PER_KNOT
             else:
-                loginfo("unknown unit '%s' for %s" % (unit, obs))
-        elif "pressure" in obs:
+                loginfo("unknown unit '%s' for %s" % (unit, measure))
+        elif "pressure" in measure:
             # [P] pressure H=hPa P=pascal B=bar M=mmHg I=inHg
             if unit == "H":
                 pass  # already hPa/mbar
@@ -415,32 +415,32 @@ class Station(object):
             elif unit == "I":
                 value *= MBAR_PER_INHG
             else:
-                loginfo("unknown unit '%s' for %s" % (unit, obs))
-        elif "rain_accumulation" in obs:
+                loginfo("unknown unit '%s' for %s" % (unit, measure))
+        elif "rain_accumulation" in measure:
             # rain: accumulation duration intensity intensity_peak
             # [U] precip M=(mm s mm/h) I=(in s in/h)
             if unit == "M":
                 pass  # already mm
             elif unit == "I":
-                if "duration" not in obs:
+                if "duration" not in measure:
                     value *= MM_PER_INCH
             elif unit == "s":
                 pass  # already seconds
             else:
-                loginfo("unknown unit '%s' for %s" % (unit, obs))
-        elif "hail" in obs:
+                loginfo("unknown unit '%s' for %s" % (unit, measure))
+        elif "hail" in measure:
             # hail: accumulation duration intensity intensity_peak
             # [S] hail M=(hits/cm^2 s hits/cm^2h) I=(hits/in^2 s hits/in^2h)
             #          H=hits
             if unit == "M":
                 pass  # already cm^2
             elif unit == "I":
-                if "duration" not in obs:
+                if "duration" not in measure:
                     value *= CM2_PER_IN2
             elif unit == "s":
                 pass  # already seconds
             else:
-                loginfo("unknown unit '%s' for %s" % (unit, obs))
+                loginfo("unknown unit '%s' for %s" % (unit, measure))
         return value
 
 
@@ -683,24 +683,24 @@ class WXT5x0ConfigurationEditor(weewx.drivers.AbstractConfEditor):
 
 
 class WXT5x0Driver(weewx.drivers.AbstractDevice):
-    OBSERVATION_2_MEASURE = {
-        "windDir": "wind_dir_avg",
-        "windSpeed": "wind_speed_avg",
-        "windGustDir": "wind_dir_max",
-        "windGust": "wind_speed_max",
-        "outTemp": "temperature",
-        "outHumidity": "humidity",
+    MEASURE_2_OBSERVATION = {
+        "wind_dir_avg": "windDir",
+        "wind_speed_avg": "windSpeed",
+        "wind_dir_max": "windGustDir",
+        "wind_speed_max": "windGust",
+        "temperature": "outTemp",
+        "humidity": "outHumidity",
         "pressure": "pressure",
-        "rain": "rain_accumulation",
-        "rainRate": "rain_intensity",
+        "rain_accumulation": "rain",
+        "rain_intensity": "rainRate",
         # Fixme: stormRain units is group_rain, not group_rainrate ...
         # "stormRain": "rain_intensity_peak",
         "hail": "hail",
-        "hailRate": "hail_intensity",
-        "heatingTemp": "heating_temperature",
-        "heatingVoltage": "heating_voltage",
-        "supplyVoltage": "supply_voltage",
-        "referenceVoltage": "reference_voltage",
+        "hail_intensity": "hailRate",
+        "heating_temperature": "heatingTemp",
+        "heating_voltage": "heatingVoltage",
+        "supply_voltage": "supplyVoltage",
+        "reference_voltage": "referenceVoltage",
     }
 
     def __init__(self, **stn_dict):
@@ -790,8 +790,8 @@ class WXT5x0Driver(weewx.drivers.AbstractDevice):
         for measure in data:
             # if there is a mapping, use it. Otherwise use the sensor naming
             # native to the hardware.
-            if measure in self.OBSERVATION_2_MEASURE:
-                observation = self.OBSERVATION_2_MEASURE[measure]
+            if measure in self.MEASURE_2_OBSERVATION:
+                observation = self.MEASURE_2_OBSERVATION[measure]
                 packet[observation] = data[measure]
             else:
                 packet[measure] = data[measure]
