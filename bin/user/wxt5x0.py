@@ -293,6 +293,7 @@ class Station(object):
         return a + b + c
 
     MEASURES = {
+
         # aR1: wind message
         "Dn": "wind_dir_min",
         "Dm": "wind_dir_avg",
@@ -300,10 +301,12 @@ class Station(object):
         "Sn": "wind_speed_min",
         "Sm": "wind_speed_avg",
         "Sx": "wind_speed_max",
+
         # aR2: pressure, temperature, humidity message
         "Ta": "temperature",
         "Ua": "humidity",
         "Pa": "pressure",
+
         # aR3: precipitation message
         "Rc": "rain_accumulation",
         "Rd": "rain_duration",
@@ -313,6 +316,7 @@ class Station(object):
         "Hi": "hail_intensity",
         "Rp": "rain_intensity_peak",
         "Hp": "hail_intensity_peak",
+
         # dR5: supervisor message
         "Th": "heating_temperature",
         "Vh": "heating_voltage",
@@ -370,7 +374,7 @@ class Station(object):
         return parsed
 
     @staticmethod
-    def convert(measure, value, unit):
+    def convert(measure: str, value: float, unit: str):
         """Convert units
         measure: a string, such as 'heating_temperature'
         value: float
@@ -382,7 +386,7 @@ class Station(object):
         # mm instead of cm for rain, and m/s instead of km/hr for wind speed
         #
         # convert from the indicated units to the weewx METRICWX unit system
-        if "temperature" in measure:
+        if measure.startswith("temperature"):
             # [T] temperature C=celsius F=fahrenheit
             if unit == "C":
                 pass  # already C
@@ -390,7 +394,7 @@ class Station(object):
                 value = (value - 32.0) * 5.0 / 9.0
             else:
                 loginfo("unknown unit '%s' for %s" % (unit, measure))
-        elif "wind_speed" in measure:
+        elif measure.startswith("wind_speed"):
             # [U] speed M=m/s K=km/h S=mph N=knots
             if unit == "M":
                 pass  # already m/s
@@ -402,7 +406,7 @@ class Station(object):
                 value *= MPS_PER_KNOT
             else:
                 loginfo("unknown unit '%s' for %s" % (unit, measure))
-        elif "pressure" in measure:
+        elif measure.startswith("pressure"):
             # [P] pressure H=hPa P=pascal B=bar M=mmHg I=inHg
             if unit == "H":
                 pass  # already hPa/mbar
@@ -416,18 +420,19 @@ class Station(object):
                 value *= MBAR_PER_INHG
             else:
                 loginfo("unknown unit '%s' for %s" % (unit, measure))
-        elif "rain_accumulation" in measure:
+
+        elif measure.startswith("rain"):
             # rain: accumulation duration intensity intensity_peak
             # [U] precip M=(mm s mm/h) I=(in s in/h)
             if unit == "M":
                 pass  # already mm
             elif unit == "I":
-                if "duration" not in measure:
-                    value *= MM_PER_INCH
+                assert f"Unsupported rain unit {unit}"
             elif unit == "s":
                 pass  # already seconds
             else:
                 loginfo("unknown unit '%s' for %s" % (unit, measure))
+
         elif "hail" in measure:
             # hail: accumulation duration intensity intensity_peak
             # [S] hail M=(hits/cm^2 s hits/cm^2h) I=(hits/in^2 s hits/in^2h)
@@ -435,8 +440,7 @@ class Station(object):
             if unit == "M":
                 pass  # already cm^2
             elif unit == "I":
-                if "duration" not in measure:
-                    value *= CM2_PER_IN2
+                assert f"Unsupported hail unit {unit}"
             elif unit == "s":
                 pass  # already seconds
             else:
