@@ -326,7 +326,7 @@ class Station(object):
     }
 
     @staticmethod
-    def parse(raw) -> dict:
+    def parse(raw_msg: str) -> dict:
         # 0R0,Dn=000#,Dm=106#,Dx=182#,Sn=1.1#,Sm=4.0#,Sx=6.6#,Ta=16.0C,Ua=50.0P,Pa=1018.1H,Rc=0.00M,Rd=0s,Ri=0.0M,Hc=0.0M,Hd=0s,Hi=0.0M,Rp=0.0M,Hp=0.0M,Th=15.6C,Vh=0.0N,Vs=15.2V,Vr=3.498V,Id=Ant
         # 0R0,Dm=051D,Sm=0.1M,Ta=27.9C,Ua=39.4P,Pa=1003.2H,Rc=0.00M,Th=28.1C,Vh=0.0N
         # here is an unexpected result: no value for Dn!
@@ -334,7 +334,7 @@ class Station(object):
 
         parsed = dict()
 
-        for part in raw.strip().split(","):
+        for part in raw_msg.strip().split(","):
             cnt = part.count("=")
 
             if cnt == 0:
@@ -342,31 +342,32 @@ class Station(object):
                 continue
 
             elif cnt == 1:
-                abbr, vstr = part.split("=")
+                abbrev, value_unit = part.split("=")
 
-                if abbr == "Id":  # skip the information field
+                if abbrev == "Id":  # skip the information field
                     continue
 
-                measure = Station.MEASURES.get(abbr)
+                measure = Station.MEASURES.get(abbrev)
                 if measure:
                     value = None
                     unit = None
                     try:
                         # Get the last character as a byte-string
-                        unit = vstr[-1:]
+                        unit = value_unit[-1:]
                         if unit != "#":  # '#' indicates invalid data
-                            value = float(vstr[:-1])
+                            value = float(value_unit[:-1])
                             value = Station.convert(measure, value, unit)
                         else:
                             logwarn(
-                                f"Invalid data for measure {measure}: {part} - {abbr} {vstr}"
+                                f"Invalid data for measure={measure}: part={part} - abbrev={abbrev} value_unit={value_unit} unit={unit}"
                             )
                     except ValueError as e:
-                        logerr("parse failed for %s (%s):%s" % (abbr, vstr, e))
+                        logerr(f"parse failed for abbrev={abbrev} value_unit={value_unit} unit={unit} measure={measure} raw_msg={raw_msg}: {e}")
+
                     parsed[measure] = value
 
                 else:
-                    logwarn("unknown sensor %s: %s" % (abbr, vstr))
+                    logwarn("unknown sensor %s: %s" % (abbrev, value_unit))
 
             else:
                 logwarn("skip observation: '%s'" % part)
