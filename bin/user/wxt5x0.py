@@ -165,9 +165,6 @@ class Station(object):
         loginfo("Setting up rain sensor")
 
         # turn on rain/hail amount and intensity
-        self.send_and_receive("RU,R=1011010010110100")
-        time.sleep(1)
-
         self.send_and_receive("RU,R=1111111111111111")
         time.sleep(1)
 
@@ -175,7 +172,7 @@ class Station(object):
         # NMEA: nmea0183WriteLineToStation: Expect:0RU,I=60,U=I,M=T,S=I,Z=M, Recv:0RU,I=60,U=I,S=I,M=T,Z=M
         #
         # Nope, set to metric to match METRICWX (mm, mm/h)
-        self.send_and_receive("RU,I=60,U=M,S=M,M=R,Z=M")
+        self.send_and_receive("RU,U=M,S=M,M=C,Z=A")
         time.sleep(1)
 
     def setup_thp_sensors(self):
@@ -697,7 +694,7 @@ class WXT5x0Driver(weewx.drivers.AbstractDevice):
         "humidity": "outHumidity",
         "pressure": "pressure",
         "rain_accumulation": "rain",
-        "rain_intensity": "rainRate",
+        #"rain_intensity": "rainRate",
         # Fixme: stormRain units is group_rain, not group_rainrate ...
         # "stormRain": "rain_intensity_peak",
         "hail": "hail",
