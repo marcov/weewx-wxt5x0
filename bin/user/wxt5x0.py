@@ -806,6 +806,8 @@ class WXT5x0Driver(weewx.drivers.AbstractDevice):
             last_time = 0.1 * 3600 / self.last_rain_rate
             time_since_last_rate = time.time() - self.last_rain_rate_sample
             packet["rainRate"] = 0.1 * 3600 / (last_time + time_since_last_rate)
+        else:
+            packet["rainRate"] = 0.0
 
         packet["dateTime"] = int(time.time() + 0.5)
         # us = unit system
