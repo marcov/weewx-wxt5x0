@@ -708,6 +708,8 @@ class WXT5x0Driver(weewx.drivers.AbstractDevice):
         self._max_tries = int(stn_dict.get("max_tries", 5))
         self._retry_wait = int(stn_dict.get("retry_wait", 10))
         self._poll_interval = int(stn_dict.get("poll_interval", 1))
+        self.last_rain_rate : float = None
+        self.last_rain_rate_sample : float = None
 
         protocol = stn_dict.get("protocol", "ascii").lower()
 
@@ -795,12 +797,21 @@ class WXT5x0Driver(weewx.drivers.AbstractDevice):
             else:
                 packet[measure] = data[measure]
 
+        if packet.get("rainRate"):
+            self.last_rain_rate = packet["rainRate"]
+            self.last_rain_rate_sample = time.time()
+        elif self.last_rain_rate:
+            # last_time = 0.1mm / rainRate
+            # rainRate = 0.1mm / (last_time + time_since_last_rate)
+            last_time = 0.1 * 3600 / self.last_rain_rate
+            time_since_last_rate = time.time() - self.last_rain_rate_sample
+            packet["rainRate"] = 0.1 * 3600 / (last_time + time_since_last_rate)
+
         packet["dateTime"] = int(time.time() + 0.5)
         # us = unit system
         packet["usUnits"] = weewx.METRICWX
 
         return packet
-
 
 # define a main entry point for basic testing of the station without weewx
 # engine and service overhead.  invoke this as follows from the weewx root dir:
