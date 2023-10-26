@@ -155,9 +155,7 @@ class Station(object):
         self.send_and_receive("WU,I=2,A=2")
         time.sleep(1)
 
-        # set units to MPH [for KMH (U=K)], direction correction to 0, response format type T
-
-        # Nope, set to m/s to match METRICWX
+        # Set to m/s to match METRICWX
         self.send_and_receive("WU,U=M,D=0,N=T")
         time.sleep(1)
 
@@ -168,10 +166,9 @@ class Station(object):
         self.send_and_receive("RU,R=1111111111111111")
         time.sleep(1)
 
-        # set units to imperial, manual reset of the counters
-        # NMEA: nmea0183WriteLineToStation: Expect:0RU,I=60,U=I,M=T,S=I,Z=M, Recv:0RU,I=60,U=I,S=I,M=T,Z=M
-        #
-        # Nope, set to metric to match METRICWX (mm, mm/h)
+        # set to metric to match METRICWX (mm, mm/h)
+        # Tipping bucket 0.1 mm increments
+        # Auto-reset
         self.send_and_receive("RU,U=M,S=M,M=C,Z=A")
         time.sleep(1)
 
@@ -694,7 +691,7 @@ class WXT5x0Driver(weewx.drivers.AbstractDevice):
         "humidity": "outHumidity",
         "pressure": "pressure",
         "rain_accumulation": "rain",
-        #"rain_intensity": "rainRate",
+        "rain_intensity": "rainRate",
         # Fixme: stormRain units is group_rain, not group_rainrate ...
         # "stormRain": "rain_intensity_peak",
         "hail": "hail",
