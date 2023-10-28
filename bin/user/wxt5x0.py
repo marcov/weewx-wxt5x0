@@ -550,7 +550,7 @@ class TcpInterface(Interface):
 
             # Do some checks. Probably a bit overkill ...
             if buf.find(eol) == -1:
-                logerr(f"Response does not contain the EOL {eol}")
+                logerr(f"Buffer '{buf}' does not contain the EOL {eol}")
                 return b""
 
             lines = buf.split(eol)
@@ -584,8 +584,9 @@ class TcpInterface(Interface):
             self.socket.settimeout(3)
             while r:
                 r = self.socket.recv(512)
+                loginfo(f"Flushed {len(r)} bytes")
         except TimeoutError:
-            logdbg("Flushed")
+            logdbg("Flushing completed")
         finally:
             self.socket.settimeout(self.timeout)
 
@@ -749,13 +750,19 @@ class WXT5x0Driver(weewx.drivers.AbstractDevice):
     def hardware_name(self):
         return self._model
 
-    def gen_one_packet(self):
+    def get_loop_packet(self):
         raw = self._station.send_and_receive()
         logdbg(f"ascii: {raw}")
         logdbg("raw: %s" % _fmt(raw))
 
+        if not raw:
+            raise weewx.WeeWxIOError(f"Got empty raw message: {raw}")
+
         data = self._station.parse(raw)
         logdbg(f"parsed: {pprint.pformat(data)}")
+
+        if not data:
+            raise weewx.WeeWxIOError(f"No parsed data in raw message {raw}")
 
         loop_packet = self._data_to_packet(data)
         logdbg(f"loop_packet: {pprint.pformat(loop_packet)}")
@@ -768,14 +775,14 @@ class WXT5x0Driver(weewx.drivers.AbstractDevice):
         while True:
             try:
                 tries_count += 1
-                yield self.gen_one_packet()
+                yield self.get_loop_packet()
                 tries_count = 0
                 time.sleep(self._poll_interval)
 
             except IOError as e:
                 if tries_count >= self._max_tries:
-                    raise weewx.RetriesExceeded(
-                        f"Read failed after {tries_count} tries"
+                    raise weewx.WeeWxIOError(
+                        f"Gen one loop packet failed after {tries_count} tries: {e}"
                     )
 
                 logerr(
@@ -788,13 +795,19 @@ class WXT5x0Driver(weewx.drivers.AbstractDevice):
     def _data_to_packet(self, data: dict) -> dict:
         packet = dict()
 
+        assert data, f"No data: {data}"
+
         for measure in data:
-            # if there is a mapping, use it. Otherwise use the sensor naming
-            # native to the hardware.
             if measure in self.MEASURE_2_OBSERVATION:
                 observation = self.MEASURE_2_OBSERVATION[measure]
                 packet[observation] = data[measure]
-            else:
+
+        # No real observations to report.
+        if not packet:
+            return packet
+
+        # Also include raw measurements in the loop.
+        for measure in data:
                 packet[measure] = data[measure]
 
         if packet.get("rainRate"):
