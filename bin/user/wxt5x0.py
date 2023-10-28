@@ -152,11 +152,8 @@ class Station(object):
         time.sleep(1)
 
         # set update and averaging interval to 2 seconds for initial readings
-        self.send_and_receive("WU,I=2,A=2")
-        time.sleep(1)
-
         # Set to m/s to match METRICWX
-        self.send_and_receive("WU,U=M,D=0,N=T")
+        self.send_and_receive("WU,I=2,A=2,U=M,D=0,F=4")
         time.sleep(1)
 
     def setup_rain_sensor(self):
