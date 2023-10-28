@@ -176,7 +176,7 @@ class Station(object):
         loginfo("Setting up temperature, humidity, pressure sensors")
 
         # turn on air pressure, temperature and humidity
-        self.send_and_receive("TU,R=1101000011010000")
+        self.send_and_receive("TU,R=1111000011110000")
 
         # set pressure units to in/Hg, temperature units to Fahrenheit
         #
@@ -298,6 +298,7 @@ class Station(object):
 
         # aR2: pressure, temperature, humidity message
         "Ta": "temperature",
+        "Tp": "temperature_internal",
         "Ua": "humidity",
         "Pa": "pressure",
 
@@ -689,6 +690,7 @@ class WXT5x0Driver(weewx.drivers.AbstractDevice):
         "wind_dir_max": "windGustDir",
         "wind_speed_max": "windGust",
         "temperature": "outTemp",
+        "temperature_internal": "extraTemp1",
         "humidity": "outHumidity",
         "pressure": "pressure",
         "rain_accumulation": "rain",
