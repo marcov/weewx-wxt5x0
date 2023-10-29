@@ -713,17 +713,23 @@ class WXT5x0Driver(weewx.drivers.AbstractDevice):
         "wind_speed_avg": "windSpeed",
         "wind_dir_max": "windGustDir",
         "wind_speed_max": "windGust",
+
         "temperature": "outTemp",
         "temperature_internal": "extraTemp1",
         "humidity": "outHumidity",
         "pressure": "pressure",
+
         # Enable this for tipping bucket mode
         # "rain_accumulation": "rain",
         "rain_intensity": "rainRate",
-        # Fixme: stormRain units is group_rain, not group_rainrate ...
-        # "stormRain": "rain_intensity_peak",
+        "rain_duration": "rainDur",
+
+        # NOTE: "rain_intensity_peak" is a mm/h value, while stormRain is
+        # group_rain, i.e. it is a cumulative value in mm.
+
         "hail": "hail",
         "hail_intensity": "hailRate",
+
         "heating_temperature": "heatingTemp",
         "heating_voltage": "heatingVoltage",
         "supply_voltage": "supplyVoltage",
