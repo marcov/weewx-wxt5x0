@@ -55,11 +55,13 @@ The supervisor message controls error messaging and heater.
 # also, REC does not know that rain_total is cumulative, not delta
 # note that 'hail' (hits/area) is not cumulative like 'rain_total' (length)
 
+from enum import Enum, auto
 import logging
 import pprint
 import socket
 import sys
 import time
+import threading
 
 import weewx.drivers
 
@@ -105,7 +107,7 @@ def confeditor_loader():
     return WXT5x0ConfigurationEditor()
 
 
-def _fmt(byte_str):
+def hexlify(byte_str):
     """This will format raw bytes into a string of space-delimited hex."""
     try:
         # Python 2
@@ -116,11 +118,17 @@ def _fmt(byte_str):
 
 
 class Station(object):
+    class MessageMode(Enum):
+        Polled = auto()
+        Auto = auto()
+
     def __init__(self, interface, address: int):
         self.crc_prefix = None
         self.terminator = ""
         self.address = address
         self.interface: Interface = interface
+        self.message_mode = None
+        self.last_data_msg_time = None
 
     def setup(self):
         loginfo("Setting up station")
@@ -139,34 +147,38 @@ class Station(object):
         self.setup_rain_sensor()
         self.setup_thp_sensors()
 
-        # Resume auto mode
-        loginfo("Setting auto mode")
-        self.set_automatic_mode()
-        time.sleep(1)
-
     def setup_wind_sensor(self):
         loginfo("Setting up wind sensor")
 
         # turn on average and max direction and speed
         self.send_and_receive("WU,R=0110110001101100")
-        time.sleep(1)
+        time.sleep(0.5)
 
-        # set update and averaging interval to 2 seconds for initial readings
+        # set update and averaging interval.
         # Set to m/s to match METRICWX
-        self.send_and_receive("WU,I=2,A=2,U=M,D=0,F=4")
-        time.sleep(1)
+        self.send_and_receive("WU,I=30,A=30,U=M,D=0,F=4")
+        time.sleep(0.5)
 
     def setup_rain_sensor(self):
         loginfo("Setting up rain sensor")
 
         # turn on rain/hail amount and intensity
         self.send_and_receive("RU,R=1111111111111111")
-        time.sleep(1)
+        time.sleep(0.5)
 
         # set to metric to match METRICWX (mm, mm/h)
-        # Tipping bucket 0.1 mm increments
-        # Auto-reset
-        self.send_and_receive("RU,U=M,S=M,M=C,Z=A")
+        # U: rain units
+        # S: hail units
+        #
+        # M: autosend mode
+        # - R: precipitation ON/OFF
+        # - C: tipping bucket 0.1mm
+        # - T: time interval based
+        #
+        # Z: reset mode
+        # - A = auto
+        # - M = manual via aXZRU
+        self.send_and_receive("RU,U=M,S=M,M=T,Z=M")
         time.sleep(1)
 
     def setup_thp_sensors(self):
@@ -240,9 +252,11 @@ class Station(object):
     def set_automatic_mode(self):
         loginfo("set auto mode")
         self.send_and_receive("XU,M=A")
+        self.message_mode = self.MessageMode.Auto
 
     def set_polled_mode(self):
         self.send_and_receive("XU,M=P")
+        self.message_mode = self.MessageMode.Polled
 
     def get_wind(self):
         return self.send_and_receive("R1")
@@ -256,8 +270,23 @@ class Station(object):
     def get_supervisor(self):
         return self.send_and_receive("R5")
 
-    def get_composite(self):
+    def get_composite_data_message(self):
         return self.send_and_receive("R0")
+
+    def get_data_message(self, poll_interval):
+        if self.message_mode == self.MessageMode.Auto:
+            data_msg = self.send_and_receive()
+        else:
+            assert poll_interval >= 1, f"Poll interval {poll_interval} is too small"
+            if (
+                self.last_data_msg_time
+                and (time.time() - self.last_data_msg_time) < poll_interval
+            ):
+                time.sleep(poll_interval)
+            data_msg = self.get_composite_data_message()
+
+        self.last_data_msg_time = time.time()
+        return data_msg
 
     @staticmethod
     def calc_crc(txt):
@@ -284,7 +313,6 @@ class Station(object):
         return a + b + c
 
     MEASURES = {
-
         # aR1: wind message
         "Dn": "wind_dir_min",
         "Dm": "wind_dir_avg",
@@ -292,13 +320,11 @@ class Station(object):
         "Sn": "wind_speed_min",
         "Sm": "wind_speed_avg",
         "Sx": "wind_speed_max",
-
         # aR2: pressure, temperature, humidity message
         "Ta": "temperature",
         "Tp": "temperature_internal",
         "Ua": "humidity",
         "Pa": "pressure",
-
         # aR3: precipitation message
         "Rc": "rain_accumulation",
         "Rd": "rain_duration",
@@ -308,7 +334,6 @@ class Station(object):
         "Hi": "hail_intensity",
         "Rp": "rain_intensity_peak",
         "Hp": "hail_intensity_peak",
-
         # dR5: supervisor message
         "Th": "heating_temperature",
         "Vh": "heating_voltage",
@@ -354,7 +379,9 @@ class Station(object):
                                 f"Invalid data for measure={measure}: part={part} - abbrev={abbrev} value_unit={value_unit} unit={unit}"
                             )
                     except ValueError as e:
-                        logerr(f"parse failed for abbrev={abbrev} value_unit={value_unit} unit={unit} measure={measure} raw_msg={raw_msg}: {e}")
+                        logerr(
+                            f"parse failed for abbrev={abbrev} value_unit={value_unit} unit={unit} measure={measure} raw_msg={raw_msg}: {e}"
+                        )
 
                     parsed[measure] = value
 
@@ -690,7 +717,8 @@ class WXT5x0Driver(weewx.drivers.AbstractDevice):
         "temperature_internal": "extraTemp1",
         "humidity": "outHumidity",
         "pressure": "pressure",
-        "rain_accumulation": "rain",
+        # Enable this for tipping bucket mode
+        # "rain_accumulation": "rain",
         "rain_intensity": "rainRate",
         # Fixme: stormRain units is group_rain, not group_rainrate ...
         # "stormRain": "rain_intensity_peak",
@@ -708,8 +736,9 @@ class WXT5x0Driver(weewx.drivers.AbstractDevice):
         self._max_tries = int(stn_dict.get("max_tries", 5))
         self._retry_wait = int(stn_dict.get("retry_wait", 10))
         self._poll_interval = int(stn_dict.get("poll_interval", 1))
-        self.last_rain_rate : float = None
-        self.last_rain_rate_sample : float = None
+        self.last_rain_accum: float = 0
+        self.last_rain_intensity: float = 0
+        self.p_reset_timer: threading.Timer | None = None
 
         protocol = stn_dict.get("protocol", "ascii").lower()
 
@@ -750,21 +779,20 @@ class WXT5x0Driver(weewx.drivers.AbstractDevice):
         return self._model
 
     def get_loop_packet(self):
-        raw = self._station.send_and_receive()
-        logdbg(f"ascii: {raw}")
-        logdbg("raw: %s" % _fmt(raw))
+        data_msg = self._station.get_data_message(self._poll_interval)
+        logdbg(f"data message: ascii: {data_msg} -  hex: {hexlify(data_msg)}")
 
-        if not raw:
-            raise weewx.WeeWxIOError(f"Got empty raw message: {raw}")
+        if not data_msg:
+            raise weewx.WeeWxIOError(f"Got empty data message: {data_msg}")
 
-        data = self._station.parse(raw)
-        logdbg(f"parsed: {pprint.pformat(data)}")
+        data_parsed = self._station.parse(data_msg)
+        logdbg(f"parsed data message: {pprint.pformat(data_parsed)}")
 
-        if not data:
-            raise weewx.WeeWxIOError(f"No parsed data in raw message {raw}")
+        if not data_parsed:
+            raise weewx.WeeWxIOError(f"No parsed data in data message {data_msg}")
 
-        loop_packet = self._data_to_packet(data)
-        logdbg(f"loop_packet: {pprint.pformat(loop_packet)}")
+        loop_packet = self.data_to_packet(data_parsed)
+        logdbg(f"loop packet: {pprint.pformat(loop_packet)}")
 
         return loop_packet
 
@@ -776,7 +804,6 @@ class WXT5x0Driver(weewx.drivers.AbstractDevice):
                 tries_count += 1
                 yield self.get_loop_packet()
                 tries_count = 0
-                time.sleep(self._poll_interval)
 
             except IOError as e:
                 if tries_count >= self._max_tries:
@@ -791,7 +818,7 @@ class WXT5x0Driver(weewx.drivers.AbstractDevice):
 
                 time.sleep(self._retry_wait)
 
-    def _data_to_packet(self, data: dict) -> dict:
+    def data_to_packet(self, data: dict) -> dict:
         packet = dict()
 
         assert data, f"No data: {data}"
@@ -807,25 +834,52 @@ class WXT5x0Driver(weewx.drivers.AbstractDevice):
 
         # Also include raw measurements in the loop.
         for measure in data:
-                packet[measure] = data[measure]
+            packet[measure] = data[measure]
 
-        if packet.get("rainRate"):
-            self.last_rain_rate = packet["rainRate"]
-            self.last_rain_rate_sample = time.time()
-        elif self.last_rain_rate:
-            # last_time = 0.1mm / rainRate
-            # rainRate = 0.1mm / (last_time + time_since_last_rate)
-            last_time = 0.1 * 3600 / self.last_rain_rate
-            time_since_last_rate = time.time() - self.last_rain_rate_sample
-            packet["rainRate"] = 0.1 * 3600 / (last_time + time_since_last_rate)
-        else:
-            packet["rainRate"] = 0.0
-
-        packet["dateTime"] = int(time.time() + 0.5)
+        packet["dateTime"] = int(time.time())
         # us = unit system
         packet["usUnits"] = weewx.METRICWX
 
+        ################ Rain
+        curr_rain_accum = data.get("rain_accumulation", None)
+        curr_rain_intensity = data.get("rain_intensity", None)
+
+        if curr_rain_accum is None:
+            logerr("No rain accumulation measure found!")
+            return packet
+        elif curr_rain_intensity is None:
+            logerr("No rain intensity measure found!")
+            return packet
+
+        if curr_rain_accum < self.last_rain_accum:
+            self.last_rain_accum = 0
+
+        packet["rain"] = curr_rain_accum - self.last_rain_accum
+        self.last_rain_accum = curr_rain_accum
+
+        ###### Precipitation ended
+        # FIXME: we should lock before calling this!
+        def reset_precipitation_callback():
+            loginfo("Running precipitation reset timer")
+            self._station.precip_counter_reset()
+            self._station.precip_intensity_reset()
+
+        if curr_rain_intensity:
+            if self.p_reset_timer:
+                loginfo("Cancelling precipitation reset timer")
+                self.p_reset_timer.cancel()
+                self.p_reset_timer = None
+        elif self.last_rain_intensity:
+            assert not self.p_reset_timer, "Precipitation reset timer found armed!"
+
+            loginfo("Arming precipitation reset timer")
+            self.p_reset_timer = threading.Timer(3600, reset_precipitation_callback)
+            self.p_reset_timer.start()
+
+        self.last_rain_intensity = curr_rain_intensity
+
         return packet
+
 
 # define a main entry point for basic testing of the station without weewx
 # engine and service overhead.  invoke this as follows from the weewx root dir:
@@ -929,15 +983,13 @@ if __name__ == "__main__":
         elif options.get_supervisor:
             print("%s" % s.get_supervisor().strip())
         elif options.get_composite:
-            print("%s" % s.get_composite().strip())
+            print("%s" % s.get_composite_data_message().strip())
         else:
             loginfo("Waiting for data ...")
             while True:
-                # data = s.get_composite().strip()
-                data = s.send_and_receive()
+                data = s.get_data_message(options.poll_interval)
                 parsed = Station.parse(data)
                 if parsed:
                     loginfo(f"{pprint.pformat(parsed)}")
                 else:
                     loginfo(f"[no parsable data]")
-                time.sleep(options.poll_interval)
