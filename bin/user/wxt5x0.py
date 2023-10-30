@@ -143,6 +143,10 @@ class Station(object):
         loginfo("Flushing interface")
         self.interface.flush()
 
+        loginfo("Resetting precipitation data")
+        self.precip_counter_reset()
+        self.precip_intensity_reset()
+
         self.setup_wind_sensor()
         self.setup_rain_sensor()
         self.setup_thp_sensors()
@@ -719,8 +723,12 @@ class WXT5x0Driver(weewx.drivers.AbstractDevice):
         "humidity": "outHumidity",
         "pressure": "pressure",
 
-        # Enable this for tipping bucket mode
+        # Precipitation autosend mode: tipping bucket mode
         # "rain_accumulation": "rain",
+
+        # Precipitation autosend mode: time-interval based
+        "rain_accumulation": "totalRain",
+
         "rain_intensity": "rainRate",
         "rain_duration": "rainDur",
 
