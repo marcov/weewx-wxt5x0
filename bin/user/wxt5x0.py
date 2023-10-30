@@ -289,7 +289,9 @@ class Station(object):
                 time.sleep(poll_interval)
             data_msg = self.get_composite_data_message()
 
-        self.last_data_msg_time = time.time()
+        if data_msg:
+            self.last_data_msg_time = time.time()
+
         return data_msg
 
     @staticmethod
@@ -538,6 +540,7 @@ class TcpInterface(Interface):
         self.timeout = timeout
         self.socket: socket.socket = None
         self.cached_lines = list()
+        self.buffered : bytes = b""
 
     def open(self):
         self.socket = socket.socket(
@@ -564,8 +567,8 @@ class TcpInterface(Interface):
         self.socket.sendall(payload)
 
     def readline(self, eol: bytes):
-        # daft readline implementation - it assumes packets always contain full
-        # lines, delimited by eol.
+        # daft readline implementation - it assumes received packets always
+        # contain full lines, delimited by eol.
 
         logdbg(f"Found {len(self.cached_lines)} cached lines")
         if self.cached_lines:
@@ -573,19 +576,23 @@ class TcpInterface(Interface):
             retline = self.cached_lines.pop(0)
         else:
             logdbg(f"recv line")
-            buf = self.socket.recv(512)
+            buf = self.buffered + self.socket.recv(512)
 
             logdbg(f"readline [{len(buf)}] - {buf}")
 
             # Do some checks. Probably a bit overkill ...
             if buf.find(eol) == -1:
                 logerr(f"Buffer '{buf}' does not contain the EOL {eol}")
+                self.buffered = buf
                 return b""
 
             lines = buf.split(eol)
 
-            # remove empty lines
-            lines = tuple(filter(lambda line: bool(line), buf.split(eol)))
+            assert len(lines) > 0, "We found eol so there should be at least one line"
+
+            # Whatever is left gets buffered. IF the packet ends with eol this
+            # will be an empty string.
+            self.buffered = lines.pop(-1)
 
             if len(lines) == 0:
                 logerr("No lines found in received data")
