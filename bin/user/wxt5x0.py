@@ -804,7 +804,7 @@ class WXT5x0Driver(weewx.drivers.AbstractDevice):
         logdbg(f"data message: ascii: {data_msg} -  hex: {hexlify(data_msg)}")
 
         if not data_msg:
-            raise weewx.WeeWxIOError(f"Got empty data message: {data_msg}")
+            raise weewx.WeeWxIOError(f"Got empty data message")
 
         data_parsed = self._station.parse(data_msg)
         logdbg(f"parsed data message: {pprint.pformat(data_parsed)}")
@@ -832,12 +832,13 @@ class WXT5x0Driver(weewx.drivers.AbstractDevice):
                         f"Gen one loop packet failed after {tries_count} tries: {e}"
                     )
 
+                wait_time_s = tries_count ** self._retry_wait
                 logerr(
                     f"Failed attempt {tries_count}/{self._max_tries} to read data: {e}\n"
-                    f"Waiting {self._retry_wait}s ..."
+                    f"Waiting {wait_time_s}s ..."
                 )
 
-                time.sleep(self._retry_wait)
+                time.sleep(wait_time_s)
 
     def data_to_packet(self, data: dict) -> dict:
         packet = dict()
@@ -875,8 +876,11 @@ class WXT5x0Driver(weewx.drivers.AbstractDevice):
         if curr_rain_accum < self.last_rain_accum:
             self.last_rain_accum = 0
 
-        packet["rain"] = curr_rain_accum - self.last_rain_accum
+        delta_rain_mm = curr_rain_accum - self.last_rain_accum
         self.last_rain_accum = curr_rain_accum
+        packet["rain"] = delta_rain_mm
+
+        packet["delta_rain_mm"] = delta_rain_mm
 
         ###### Precipitation ended
         # FIXME: we should lock before calling this!
