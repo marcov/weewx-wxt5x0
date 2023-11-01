@@ -118,6 +118,8 @@ def hexlify(byte_str):
 
 
 class Station(object):
+    TARGET_UNIT = weewx.US
+
     class MessageMode(Enum):
         Polled = auto()
         Auto = auto()
@@ -156,21 +158,27 @@ class Station(object):
 
         # turn on average and max direction and speed
         self.send_and_receive("WU,R=0110110001101100")
-        time.sleep(0.5)
+        time.sleep(.5)
 
         # set update and averaging interval.
-        # Set to m/s to match METRICWX
-        self.send_and_receive("WU,I=30,A=30,U=M,D=0,F=4")
-        time.sleep(0.5)
+        if Station.TARGET_UNIT == weewx.METRICWX:
+            # Set to m/s to match METRICWX
+            unit="M"
+        elif Station.TARGET_UNIT == weewx.US:
+            unit="S"
+        else:
+            raise RuntimeError(f"Bad station target unit: {self.TARGET_UNIT}")
+
+        self.send_and_receive(f"WU,I=30,A=30,U={unit},D=0,F=4")
+        time.sleep(.5)
 
     def setup_rain_sensor(self):
         loginfo("Setting up rain sensor")
 
         # turn on rain/hail amount and intensity
         self.send_and_receive("RU,R=1111111111111111")
-        time.sleep(0.5)
+        time.sleep(.5)
 
-        # set to metric to match METRICWX (mm, mm/h)
         # U: rain units
         # S: hail units
         #
@@ -182,8 +190,17 @@ class Station(object):
         # Z: reset mode
         # - A = auto
         # - M = manual via aXZRU
-        self.send_and_receive("RU,U=M,S=M,M=T,Z=M")
-        time.sleep(1)
+        if Station.TARGET_UNIT == weewx.METRICWX:
+            # set to metric to match METRICWX (mm, mm/h)
+           unit="M"
+        elif Station.TARGET_UNIT == weewx.US:
+           unit="I"
+        else:
+            raise RuntimeError(f"Bad station target unit: {self.TARGET_UNIT}")
+
+        self.send_and_receive(f"RU,U={unit},S={unit},M=T,Z=M")
+
+        time.sleep(.5)
 
     def setup_thp_sensors(self):
         loginfo("Setting up temperature, humidity, pressure sensors")
@@ -194,7 +211,16 @@ class Station(object):
         # set pressure units to in/Hg, temperature units to Fahrenheit
         #
         # Nope, set P in hPA and T in C
-        self.send_and_receive("TU,P=H,T=C")
+        if Station.TARGET_UNIT == weewx.METRICWX:
+            # set to metric to match METRICWX (mm, mm/h)
+           p_unit="H"
+           t_unit="C"
+        elif Station.TARGET_UNIT == weewx.US:
+           p_unit="I"
+           t_unit="F"
+        else:
+            raise RuntimeError(f"Bad station target unit: {self.TARGET_UNIT}")
+        self.send_and_receive(f"TU,P={p_unit},T={t_unit}")
 
     def close(self):
         self.interface.close()
@@ -320,36 +346,36 @@ class Station(object):
 
     MEASURES = {
         # aR1: wind message
-        "Dn": "wind_dir_min",
         "Dm": "wind_dir_avg",
+        "Dn": "wind_dir_min",
         "Dx": "wind_dir_max",
-        "Sn": "wind_speed_min",
         "Sm": "wind_speed_avg",
+        "Sn": "wind_speed_min",
         "Sx": "wind_speed_max",
         # aR2: pressure, temperature, humidity message
+        "Pa": "pressure",
         "Ta": "temperature",
         "Tp": "temperature_internal",
         "Ua": "humidity",
-        "Pa": "pressure",
         # aR3: precipitation message
-        "Rc": "rain_accumulation",
-        "Rd": "rain_duration",
-        "Ri": "rain_intensity",
         "Hc": "hail",
         "Hd": "hail_duration",
         "Hi": "hail_intensity",
-        "Rp": "rain_intensity_peak",
         "Hp": "hail_intensity_peak",
+        "Rc": "rain_accumulation",
+        "Rd": "rain_duration",
+        "Ri": "rain_intensity",
+        "Rp": "rain_intensity_peak",
         # dR5: supervisor message
+        "Id": "information",
         "Th": "heating_temperature",
         "Vh": "heating_voltage",
-        "Vs": "supply_voltage",
         "Vr": "reference_voltage",
-        "Id": "information",
+        "Vs": "supply_voltage",
     }
 
-    @staticmethod
-    def parse(raw_msg: str) -> dict:
+    @classmethod
+    def parse(cls, raw_msg: str) -> dict:
         # 0R0,Dn=000#,Dm=106#,Dx=182#,Sn=1.1#,Sm=4.0#,Sx=6.6#,Ta=16.0C,Ua=50.0P,Pa=1018.1H,Rc=0.00M,Rd=0s,Ri=0.0M,Hc=0.0M,Hd=0s,Hi=0.0M,Rp=0.0M,Hp=0.0M,Th=15.6C,Vh=0.0N,Vs=15.2V,Vr=3.498V,Id=Ant
         # 0R0,Dm=051D,Sm=0.1M,Ta=27.9C,Ua=39.4P,Pa=1003.2H,Rc=0.00M,Th=28.1C,Vh=0.0N
         # here is an unexpected result: no value for Dn!
@@ -379,7 +405,7 @@ class Station(object):
                         unit = value_unit[-1:]
                         if unit != "#":  # '#' indicates invalid data
                             value = float(value_unit[:-1])
-                            value = Station.convert(measure, value, unit)
+                            value = cls.check_units(measure, value, unit)
                         else:
                             logwarn(
                                 f"Invalid data for measure={measure}: part={part} - abbrev={abbrev} value_unit={value_unit} unit={unit}"
@@ -400,12 +426,88 @@ class Station(object):
         return parsed
 
     @staticmethod
-    def convert(measure: str, value: float, unit: str):
+    def check_units(measure: str, value: float, unit: str):
+        ''' Refer to: https://weewx.com/docs/customizing.htm#units '''
+        if Station.TARGET_UNIT == weewx.US:
+            return Station.check_units_us(measure, value, unit)
+        elif Station.TARGET_UNIT == weewx.METRICWX:
+            return Station.check_units_metricwx(measure,value,unit)
+        else:
+            raise RuntimeError(f"Bad station target unit: {Station.TARGET_UNIT}")
+
+    @staticmethod
+    def check_units_us(measure: str, value: float, unit: str):
         """Convert units
         measure: a string, such as 'heating_temperature'
         value: float
         unit: a one character long byte-string
         """
+
+        assert len(unit) == 1, "Unit needs to be one char"
+
+        #
+        # From the docs:
+        # The difference between METRICWX, and METRIC is that the former uses
+        # mm instead of cm for rain, and m/s instead of km/hr for wind speed
+        #
+        # convert from the indicated units to the weewx METRICWX unit system
+        if "temperature" in measure:
+            assert unit == "F"
+            return value
+
+        elif measure.startswith("wind_speed"):
+            assert unit == "S"
+            return value
+
+        elif measure.startswith("wind_dir"):
+            assert unit == "D"
+            return value
+
+        elif measure.startswith("pressure"):
+            assert unit == "I"
+            return value
+
+        elif measure.startswith("humidity"):
+            assert unit == "P"
+            return value
+
+        elif measure.startswith("rain_intensity") or measure == "rain_accumulation":
+            assert unit == "I"
+            return value
+
+        elif measure.startswith("hail_intensity") or measure == "hail":
+            assert unit == "I"
+            return value
+
+        elif measure.endswith("duration"):
+            assert unit == "s"
+            return value
+
+        elif measure == "heating_voltage":
+            # N =  disabled
+            assert unit == "V" or unit == "N"
+            return value
+
+        elif measure.endswith("voltage"):
+            assert unit == "V"
+            return value
+
+        elif measure == "information":
+            return value
+
+        logerr(f"Cannot convert {measure} {value} {unit}")
+        return None
+
+    @staticmethod
+    def check_units_metricwx(measure: str, value: float, unit: str):
+        """Convert units
+        measure: a string, such as 'heating_temperature'
+        value: float
+        unit: a one character long byte-string
+        """
+
+        assert len(unit) == 1, "Unit needs to be one char"
+
         #
         # From the docs:
         # The difference between METRICWX, and METRIC is that the former uses
@@ -417,9 +519,10 @@ class Station(object):
             if unit == "C":
                 pass  # already C
             elif unit == "F":
-                value = (value - 32.0) * 5.0 / 9.0
+                value = 0
             else:
-                loginfo("unknown unit '%s' for %s" % (unit, measure))
+                logerr(f"Unknown unit {unit} for {measure}")
+
         elif measure.startswith("wind_speed"):
             # [U] speed M=m/s K=km/h S=mph N=knots
             if unit == "M":
@@ -431,7 +534,12 @@ class Station(object):
             elif unit == "N":
                 value *= MPS_PER_KNOT
             else:
-                loginfo("unknown unit '%s' for %s" % (unit, measure))
+                logerr(f"Unknown unit {unit} for {measure}")
+
+        elif measure.startswith("wind_speed"):
+            assert unit == "D"
+            pass
+
         elif measure.startswith("pressure"):
             # [P] pressure H=hPa P=pascal B=bar M=mmHg I=inHg
             if unit == "H":
@@ -445,7 +553,7 @@ class Station(object):
             elif unit == "I":
                 value *= MBAR_PER_INHG
             else:
-                loginfo("unknown unit '%s' for %s" % (unit, measure))
+                logerr(f"Unknown unit {unit} for {measure}")
 
         elif measure.startswith("rain"):
             # rain: accumulation duration intensity intensity_peak
@@ -457,9 +565,9 @@ class Station(object):
             elif unit == "s":
                 pass  # already seconds
             else:
-                loginfo("unknown unit '%s' for %s" % (unit, measure))
+                logerr(f"Unknown unit {unit} for {measure}")
 
-        elif "hail" in measure:
+        elif measure.startswith("hail"):
             # hail: accumulation duration intensity intensity_peak
             # [S] hail M=(hits/cm^2 s hits/cm^2h) I=(hits/in^2 s hits/in^2h)
             #          H=hits
@@ -470,7 +578,20 @@ class Station(object):
             elif unit == "s":
                 pass  # already seconds
             else:
-                loginfo("unknown unit '%s' for %s" % (unit, measure))
+                logerr(f"Unknown unit {unit} for {measure}")
+
+        elif measure.endswith("voltage"):
+            if unit == "V":
+                pass  # already Volt
+            else:
+                logerr(f"Unknown unit {unit} for {measure}")
+
+        elif measure == "information":
+            pass
+
+        else:
+            logerr(f"Cannot convert {measure} {value} {unit}")
+
         return value
 
 
@@ -540,7 +661,7 @@ class TcpInterface(Interface):
         self.timeout = timeout
         self.socket: socket.socket = None
         self.cached_lines = list()
-        self.buffered : bytes = b""
+        self.buffered: bytes = b""
 
     def open(self):
         self.socket = socket.socket(
@@ -582,7 +703,7 @@ class TcpInterface(Interface):
 
             # Do some checks. Probably a bit overkill ...
             if buf.find(eol) == -1:
-                logerr(f"Buffer '{buf}' does not contain the EOL {eol}")
+                logerr(f"Buffer {buf} does not contain the EOL {eol}")
                 self.buffered = buf
                 return b""
 
@@ -724,27 +845,20 @@ class WXT5x0Driver(weewx.drivers.AbstractDevice):
         "wind_speed_avg": "windSpeed",
         "wind_dir_max": "windGustDir",
         "wind_speed_max": "windGust",
-
         "temperature": "outTemp",
         "temperature_internal": "extraTemp1",
         "humidity": "outHumidity",
         "pressure": "pressure",
-
         # Precipitation autosend mode: tipping bucket mode
         # "rain_accumulation": "rain",
-
         # Precipitation autosend mode: time-interval based
         "rain_accumulation": "totalRain",
-
         "rain_intensity": "rainRate",
         "rain_duration": "rainDur",
-
         # NOTE: "rain_intensity_peak" is a mm/h value, while stormRain is
         # group_rain, i.e. it is a cumulative value in mm.
-
         "hail": "hail",
         "hail_intensity": "hailRate",
-
         "heating_temperature": "heatingTemp",
         "heating_voltage": "heatingVoltage",
         "supply_voltage": "supplyVoltage",
@@ -832,15 +946,17 @@ class WXT5x0Driver(weewx.drivers.AbstractDevice):
                         f"Gen one loop packet failed after {tries_count} tries: {e}"
                     )
 
-                wait_time_s = tries_count ** self._retry_wait
+                wait_time_s = tries_count**self._retry_wait
                 logerr(
-                    f"Failed attempt {tries_count}/{self._max_tries} to read data: {e}\n"
+                    f"Failed attempt {tries_count}/{self._max_tries} to read data: {e}. "
                     f"Waiting {wait_time_s}s ..."
                 )
 
                 time.sleep(wait_time_s)
 
     def data_to_packet(self, data: dict) -> dict:
+        RAW_PREFIX = "raw_"
+
         packet = dict()
 
         assert data, f"No data: {data}"
@@ -856,11 +972,11 @@ class WXT5x0Driver(weewx.drivers.AbstractDevice):
 
         # Also include raw measurements in the loop.
         for measure in data:
-            packet[measure] = data[measure]
+            packet[RAW_PREFIX + measure] = data[measure]
 
         packet["dateTime"] = int(time.time())
         # us = unit system
-        packet["usUnits"] = weewx.METRICWX
+        packet["usUnits"] = Station.TARGET_UNIT
 
         ################ Rain
         curr_rain_accum = data.get("rain_accumulation", None)
@@ -876,11 +992,11 @@ class WXT5x0Driver(weewx.drivers.AbstractDevice):
         if curr_rain_accum < self.last_rain_accum:
             self.last_rain_accum = 0
 
-        delta_rain_mm = curr_rain_accum - self.last_rain_accum
+        delta_rain = curr_rain_accum - self.last_rain_accum
         self.last_rain_accum = curr_rain_accum
-        packet["rain"] = delta_rain_mm
+        packet["rain"] = delta_rain
 
-        packet["delta_rain_mm"] = delta_rain_mm
+        packet[RAW_PREFIX + "delta_rain"] = delta_rain
 
         ###### Precipitation ended
         # FIXME: we should lock before calling this!
