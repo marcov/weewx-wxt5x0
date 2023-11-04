@@ -255,25 +255,11 @@ class Station(object):
             self.tx_command(command)
         return self.rx_response()
 
-    def get_address(self):
-        self.tx_command("?", omit_address=True)
-        return self.rx_response()
-
-    def set_address(self, addr):
-        self.tx_command("A%d" % addr)
-
-    def get_ack(self):
-        return self.send_and_receive("")
-
-    def reset(self):
-        loginfo("reset")
-        self.tx_command("XZ")
-
     def precip_counter_reset(self):
-        self.tx_command("XZRU")
+        self.send_and_receive("XZRU")
 
     def precip_intensity_reset(self):
-        self.tx_command("XZRI")
+        self.send_and_receive("XZRI")
 
     def measurement_reset(self):
         loginfo("measurement reset")
@@ -697,7 +683,11 @@ class TcpInterface(Interface):
             retline = self.cached_lines.pop(0)
         else:
             logdbg(f"recv line")
-            buf = self.buffered + self.socket.recv(512)
+            try:
+                buf = self.buffered + self.socket.recv(512)
+            except TimeoutError as e:
+                logerr(f"recv timed out: {e}")
+                return b""
 
             logdbg(f"readline [{len(buf)}] - {buf}")
 
