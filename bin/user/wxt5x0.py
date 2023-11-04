@@ -145,6 +145,8 @@ class Station(object):
         loginfo("Flushing interface")
         self.interface.flush()
 
+        self.set_supervisor_config()
+
         loginfo("Resetting precipitation data")
         self.precip_counter_reset()
         self.precip_intensity_reset()
@@ -221,6 +223,17 @@ class Station(object):
         else:
             raise RuntimeError(f"Bad station target unit: {self.TARGET_UNIT}")
         self.send_and_receive(f"TU,P={p_unit},T={t_unit}")
+
+    def set_supervisor_config(self):
+        loginfo("Setting supervisor configuration")
+
+        # turn on all info
+        self.send_and_receive("SU,R=1111100011111000")
+        time.sleep(.5)
+
+        # turn on error reporting
+        self.send_and_receive(f"SU,I=15,S=Y,H=Y")
+        time.sleep(.5)
 
     def close(self):
         self.interface.close()
