@@ -231,8 +231,8 @@ class Station(object):
         self.send_and_receive("SU,R=1111100011111000")
         time.sleep(.5)
 
-        # turn on error reporting
-        self.send_and_receive(f"SU,I=15,S=Y,H=Y")
+        # disable error reporting - getting a lot of "0TX,Sync/address error"
+        self.send_and_receive(f"SU,I=15,S=N,H=Y")
         time.sleep(.5)
 
     def close(self):
