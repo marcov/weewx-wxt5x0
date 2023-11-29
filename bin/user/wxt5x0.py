@@ -483,8 +483,18 @@ class Station(object):
             return value
 
         elif measure == "heating_voltage":
-            # N =  disabled
-            assert unit == "V" or unit == "N"
+            # N = heating option is available but have been disabled by user
+            # or the heating temperature is over the high control limit.
+            #
+            # V = heating is on at 50% duty cycle and the heating temperature
+            # is between the high and middle control limits.
+            #
+            # W = heating is on at 100% duty cycle and the heating temperature
+            # is between the low and middle control limits.
+            #
+            # F = heating is on at 50% duty cycle and the heating temperature
+            # is below the low control limit.
+            assert unit in {"N", "V", "W", "F"}
             return value
 
         elif measure.endswith("voltage"):
