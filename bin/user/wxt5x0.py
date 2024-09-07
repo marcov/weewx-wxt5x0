@@ -888,6 +888,12 @@ class WXT5x0ConfigurationEditor(weewx.drivers.AbstractConfEditor):
     net_host = 127.0.0.1
     net_port = 2323
 
+    # Use CRC (1 / 0)
+    use_crc = 1
+
+    # timeout for RX
+    timeout = 2
+
     # The communication protocol to use, one of ascii, nmea, or sdi12
     protocol = ascii
 
@@ -995,8 +1001,11 @@ class WXT5x0Driver(weewx.drivers.AbstractDevice):
         else:
             raise RuntimeError(f"Not a valid interface {iface_name}")
 
+        use_crc = stn_dict.get("use_crc", "")
+        use_crc = use_crc in ("1", "true", "True", "yes")
+
         address = int(stn_dict.get("address", 0))
-        self._station = sta_cls(interface, address)
+        self._station = sta_cls(interface, address, use_crc)
 
         self._station.setup()
 
