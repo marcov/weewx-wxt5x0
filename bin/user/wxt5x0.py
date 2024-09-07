@@ -128,6 +128,8 @@ class Station(object):
         self.message_mode = None
         self.last_data_msg_time = None
 
+        loginfo(f"Creating Station - use_crc: {use_crc}, address: {address}, interface: {interface}")
+
     def setup(self):
         loginfo("Setting up station")
         self.interface.open()
