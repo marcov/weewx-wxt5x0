@@ -128,7 +128,9 @@ class Station(object):
         self.message_mode = None
         self.last_data_msg_time = None
 
-        loginfo(f"Creating Station - use_crc: {use_crc}, address: {address}, interface: {interface}")
+        loginfo(
+            f"Creating Station - use_crc: {use_crc}, address: {address}, interface: {interface}"
+        )
 
     def setup(self):
         loginfo("Setting up station")
@@ -248,7 +250,7 @@ class Station(object):
         """Send a command.
 
         command (str): string without address and terminator.
-
+        include_address (bool): if True, include the address in the TX.
         """
 
         if include_address:
@@ -275,25 +277,29 @@ class Station(object):
         return line
 
     def send_and_receive(self, command: str | None = None) -> str:
-        bad_responses = ("Unknown cmd error", "Use chksum")
+        BAD_RESPONSES = ("Unknown cmd error", "Use chksum")
 
-        # Retry only if we can re-tx the command
-        retry_num = 0
-        for retry_num in range(Station.MAX_RX_ERROR_RETRIES if command else 1):
+        # Retry only if we can re-TX the command
+        RETRIES_COUNT = Station.MAX_RX_ERROR_RETRIES if command else 1
+        ith_retry = 0
+        for ith_retry in range(RETRIES_COUNT):
             if command:
+                if ith_retry > 0:
+                    loginfo(f"Retrying TX ... [retry {ith_retry}/{RETRIES_COUNT}]")
                 self.tx_command(command)
 
             resp = self.rx_response()
 
-            # We continue on any error
+            # We continue on any error, or break on success
             if not resp:
                 logerr("Response is empty")
                 continue
 
-            if any(substr in resp for substr in bad_responses):
+            if any(substr in resp for substr in BAD_RESPONSES):
                 logerr(f"Response is bad: '{resp}'")
                 continue
 
+            # Check CRC if enabled.
             if self.use_crc:
                 if len(resp) <= Station.CRC_LEN:
                     logerr(f"Response too short to contain a CRC: '{resp}'")
@@ -315,13 +321,11 @@ class Station(object):
                 # Strip CRC
                 resp = payload
 
-            logdbg(
-                f"Response received is good [retry {retry_num}/{Station.MAX_RX_ERROR_RETRIES}]"
-            )
+            logdbg(f"Response received is good [retry {ith_retry}/{RETRIES_COUNT}]")
             break
 
         else:
-            msg = f"send_and_receive failed [retry {retry_num}/{Station.MAX_RX_ERROR_RETRIES}]"
+            msg = f"send_and_receive failed [retry {ith_retry}/{RETRIES_COUNT}]"
             logerr(msg)
             raise RuntimeError(msg)
 
@@ -779,9 +783,9 @@ class TcpInterface(Interface):
         else:
             logdbg(f"recv a new line")
 
-            retry_num = 0
+            ith_retry = 0
             buf = ""
-            for retry_num in range(Interface.MAX_RX_INCOMPLETE_RETRIES):
+            for ith_retry in range(Interface.MAX_RX_INCOMPLETE_RETRIES):
                 try:
                     buf = self.buffered + self.socket.recv(512)
                 except TimeoutError as e:
@@ -795,11 +799,11 @@ class TcpInterface(Interface):
                     break
 
                 logwarn(
-                    f"Got incomplete line (no EOL) [{len(buf)}] - Buffering and retrying RX [retry {retry_num}/{Interface.MAX_RX_INCOMPLETE_RETRIES}]"
+                    f"Got incomplete line (no EOL) [{len(buf)}] - Buffering and retrying RX [retry {ith_retry}/{Interface.MAX_RX_INCOMPLETE_RETRIES}]"
                 )
                 self.buffered = buf
             else:
-                msg = f"readline - no more partial rx attempts left [{len(buf)}] - [retry {retry_num}/{Interface.MAX_RX_INCOMPLETE_RETRIES}]"
+                msg = f"readline - no more partial rx attempts left [{len(buf)}] - [retry {ith_retry}/{Interface.MAX_RX_INCOMPLETE_RETRIES}]"
                 logerr(msg)
                 raise RuntimeError(msg)
 
@@ -1022,7 +1026,7 @@ class WXT5x0Driver(weewx.drivers.AbstractDevice):
         return self._model
 
     def get_loop_packet(self):
-        data_msg : str = self._station.get_data_message(self._poll_interval)
+        data_msg: str = self._station.get_data_message(self._poll_interval)
         logdbg(f"data message ascii: {data_msg}")
         logdbg(f"data message hex: {hexlify(data_msg.encode(encoding='utf-8'))}")
 
@@ -1250,7 +1254,9 @@ if __name__ == "__main__":
             while True:
                 data_msg = s.get_data_message(options.poll_interval)
                 logdbg(f"data message ascii: {data_msg}")
-                logdbg(f"data message hex: {hexlify(data_msg.encode(encoding='utf-8'))}")
+                logdbg(
+                    f"data message hex: {hexlify(data_msg.encode(encoding='utf-8'))}"
+                )
                 parsed = Station.parse(data_msg)
                 if parsed:
                     loginfo(f"{pprint.pformat(parsed)}")
