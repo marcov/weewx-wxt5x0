@@ -1122,7 +1122,7 @@ class WXT5x0Driver(weewx.drivers.AbstractDevice):
 # PYTHONPATH=bin python bin/user/wxt5x0.py
 
 if __name__ == "__main__":
-    print("Staring up ...")
+    print("Starting up ...")
 
     console = logging.StreamHandler(sys.stdout)
     console.setLevel(logging.DEBUG)
