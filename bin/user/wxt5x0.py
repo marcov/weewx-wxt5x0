@@ -43,7 +43,6 @@ The supervisor message controls error messaging and heater.
 """
 
 # FIXME: test with and without error messages
-# FIXME: test with and without crc
 
 # FIXME: need to fix units of introduced observations:
 #  rain_total
@@ -86,7 +85,7 @@ def logerr(msg):
 
 
 DRIVER_NAME = "WXT5x0"
-DRIVER_VERSION = "0.7"
+DRIVER_VERSION = "2.0"
 
 MPS_PER_KPH = 0.277778
 MPS_PER_MPH = 0.44704
@@ -109,23 +108,20 @@ def confeditor_loader():
 
 def hexlify(byte_str):
     """This will format raw bytes into a string of space-delimited hex."""
-    try:
-        # Python 2
-        return " ".join(["%0.2X" % ord(c) for c in byte_str])
-    except TypeError:
-        # Python 3
-        return " ".join(["%.2X" % c for c in byte_str])
+    return " ".join(["%.2X" % c for c in byte_str])
 
 
 class Station(object):
+    MAX_RX_ERROR_RETRIES = 50
     TARGET_UNIT = weewx.US
+    CRC_LEN = 3
 
     class MessageMode(Enum):
         Polled = auto()
         Auto = auto()
 
-    def __init__(self, interface, address: int):
-        self.crc_prefix = None
+    def __init__(self, interface, address: int, use_crc: bool):
+        self.use_crc = use_crc
         self.terminator = ""
         self.address = address
         self.interface: Interface = interface
@@ -143,7 +139,7 @@ class Station(object):
 
         # Flush buffer
         loginfo("Flushing interface")
-        self.interface.flush()
+        self.interface.flush(1)
 
         self.set_supervisor_config()
 
@@ -160,26 +156,26 @@ class Station(object):
 
         # turn on average and max direction and speed
         self.send_and_receive("WU,R=0110110001101100")
-        time.sleep(.5)
+        time.sleep(0.5)
 
         # set update and averaging interval.
         if Station.TARGET_UNIT == weewx.METRICWX:
             # Set to m/s to match METRICWX
-            unit="M"
+            unit = "M"
         elif Station.TARGET_UNIT == weewx.US:
-            unit="S"
+            unit = "S"
         else:
             raise RuntimeError(f"Bad station target unit: {self.TARGET_UNIT}")
 
         self.send_and_receive(f"WU,I=30,A=30,U={unit},D=0,F=4")
-        time.sleep(.5)
+        time.sleep(0.5)
 
     def setup_rain_sensor(self):
         loginfo("Setting up rain sensor")
 
         # turn on rain/hail amount and intensity
         self.send_and_receive("RU,R=1111111111111111")
-        time.sleep(.5)
+        time.sleep(0.5)
 
         # U: rain units
         # S: hail units
@@ -194,15 +190,15 @@ class Station(object):
         # - M = manual via aXZRU
         if Station.TARGET_UNIT == weewx.METRICWX:
             # set to metric to match METRICWX (mm, mm/h)
-           unit="M"
+            unit = "M"
         elif Station.TARGET_UNIT == weewx.US:
-           unit="I"
+            unit = "I"
         else:
             raise RuntimeError(f"Bad station target unit: {self.TARGET_UNIT}")
 
         self.send_and_receive(f"RU,U={unit},S={unit},M=T,Z=M")
 
-        time.sleep(.5)
+        time.sleep(0.5)
 
     def setup_thp_sensors(self):
         loginfo("Setting up temperature, humidity, pressure sensors")
@@ -215,11 +211,11 @@ class Station(object):
         # Nope, set P in hPA and T in C
         if Station.TARGET_UNIT == weewx.METRICWX:
             # set to metric to match METRICWX (mm, mm/h)
-           p_unit="H"
-           t_unit="C"
+            p_unit = "H"
+            t_unit = "C"
         elif Station.TARGET_UNIT == weewx.US:
-           p_unit="I"
-           t_unit="F"
+            p_unit = "I"
+            t_unit = "F"
         else:
             raise RuntimeError(f"Bad station target unit: {self.TARGET_UNIT}")
         self.send_and_receive(f"TU,P={p_unit},T={t_unit}")
@@ -229,11 +225,11 @@ class Station(object):
 
         # turn on all info
         self.send_and_receive("SU,R=1111100011111000")
-        time.sleep(.5)
+        time.sleep(0.5)
 
         # turn on error reporting
         self.send_and_receive(f"SU,I=15,S=Y,H=Y")
-        time.sleep(.5)
+        time.sleep(0.5)
 
     def close(self):
         self.interface.close()
@@ -246,15 +242,28 @@ class Station(object):
     def __exit__(self, *_):
         self.close()
 
-    def tx_command(self, command: str, omit_address: bool = False):
-        # if self.crc_prefix:
-        # command = command.replace('R', 'r')
-        # command = "%sxxx" % self.crc_prefix
-        if omit_address:
-            addr = ""
-        else:
+    def tx_command(self, command: str, include_address: bool = True):
+        """Send a command.
+
+        command (str): string without address and terminator.
+
+        """
+
+        if include_address:
             addr = self.address
-        packet = f"{addr}{command}{self.terminator}".encode(encoding="utf-8")
+        else:
+            addr = ""
+
+        # For CRC, the first command letter must be lowercase
+        if self.use_crc:
+            command = command[0].lower() + command[1:]
+
+        if self.use_crc:
+            crc = self.calc_crc(f"{addr}{command}")
+        else:
+            crc = ""
+
+        packet = f"{addr}{command}{crc}{self.terminator}".encode(encoding="utf-8")
         self.interface.write(packet)
 
     def rx_response(self) -> str:
@@ -264,9 +273,54 @@ class Station(object):
         return line
 
     def send_and_receive(self, command: str | None = None) -> str:
-        if command:
-            self.tx_command(command)
-        return self.rx_response()
+        bad_responses = ("Unknown cmd error", "Use chksum")
+
+        # Retry only if we can re-tx the command
+        retry_num = 0
+        for retry_num in range(Station.MAX_RX_ERROR_RETRIES if command else 1):
+            if command:
+                self.tx_command(command)
+
+            resp = self.rx_response()
+
+            # We continue on any error
+            if not resp:
+                logerr("Response is empty")
+                continue
+
+            if any(substr in resp for substr in bad_responses):
+                logerr(f"Response is bad: '{resp}'")
+                continue
+
+            if self.use_crc:
+                if len(resp) <= Station.CRC_LEN:
+                    logerr(f"Response too short to contain a CRC: '{resp}'")
+                    continue
+
+                payload, received_crc = (
+                    resp[: -Station.CRC_LEN],
+                    resp[-Station.CRC_LEN :],
+                )
+                expected_crc = self.calc_crc(payload)
+                if received_crc != expected_crc:
+                    logerr(
+                        f"CRC check failed: expected '{expected_crc}' - received '{received_crc}'"
+                    )
+                    continue
+
+                logdbg(f"CRC check passed: '{received_crc}'")
+
+            logdbg(
+                f"Response received is good [retry {retry_num}/{Station.MAX_RX_ERROR_RETRIES}]"
+            )
+            break
+
+        else:
+            msg = f"send_and_receive failed [retry {retry_num}/{Station.MAX_RX_ERROR_RETRIES}]"
+            logerr(msg)
+            raise RuntimeError(msg)
+
+        return resp
 
     def precip_counter_reset(self):
         self.send_and_receive("XZRU")
@@ -284,7 +338,8 @@ class Station(object):
         self.message_mode = self.MessageMode.Auto
 
     def set_polled_mode(self):
-        self.send_and_receive("XU,M=P")
+        poll_mode = "p" if self.use_crc else "P"
+        self.send_and_receive(f"XU,M={poll_mode}")
         self.message_mode = self.MessageMode.Polled
 
     def get_wind(self):
@@ -320,28 +375,32 @@ class Station(object):
         return data_msg
 
     @staticmethod
-    def calc_crc(txt):
-        # We need something that returns integers when iterated over.
-        try:
-            # Python 2
-            byte_iter = [ord(x) for x in txt]
-        except TypeError:
-            # Python 3
-            byte_iter = txt
+    def calc_crc(payload: str) -> str:
+        def get_int_crc(payload: str) -> int:
+            """Compute an unsigned int CRC."""
+            crc = 0
+            for b in payload:
+                crc = crc ^ ord(b)
+                for _ in range(8):
+                    if crc & 0x01:
+                        crc >>= 1
+                        crc = crc ^ 0xA001
+                    else:
+                        crc >>= 1
+                crc = crc & 0xFFFF
+            return crc
 
-        crc = 0
-        for x in byte_iter:
-            crc |= x
-            for _ in range(1, 9):
-                if crc << 16 == 1:
-                    crc >>= 1
-                    crc |= 0xA001
-                else:
-                    crc >>= 1
-        a = 0x40 | (crc >> 12)
-        b = 0x40 | ((crc >> 6) & 0x3F)
-        c = 0x40 | (crc & 0x3F)
-        return a + b + c
+        def to_ascii(crc: int) -> str:
+            """Encode an unsigned int CRC to ASCII."""
+            a = 0x40 | (crc >> 12)
+            b = 0x40 | ((crc >> 6) & 0x3F)
+            c = 0x40 | (crc & 0x3F)
+            return chr(a) + chr(b) + chr(c)
+
+        crc = get_int_crc(payload)
+        as_ascii = to_ascii(crc)
+        logdbg(f"[CRC] hex {hex(crc)} ASCII '{as_ascii}'")
+        return as_ascii
 
     MEASURES = {
         # aR1: wind message
@@ -426,11 +485,11 @@ class Station(object):
 
     @staticmethod
     def check_units(measure: str, value: float, unit: str):
-        ''' Refer to: https://weewx.com/docs/customizing.htm#units '''
+        """Refer to: https://weewx.com/docs/customizing.htm#units"""
         if Station.TARGET_UNIT == weewx.US:
             return Station.check_units_us(measure, value, unit)
         elif Station.TARGET_UNIT == weewx.METRICWX:
-            return Station.check_units_metricwx(measure,value,unit)
+            return Station.check_units_metricwx(measure, value, unit)
         else:
             raise RuntimeError(f"Bad station target unit: {Station.TARGET_UNIT}")
 
@@ -605,6 +664,9 @@ class Station(object):
 
 
 class Interface(object):
+    MAX_RX_INCOMPLETE_RETRIES = 10
+    DEFAULT_TIMEOUT = 2
+
     def __init__(self):
         pass
 
@@ -622,7 +684,7 @@ class Interface(object):
         _ = eol
         raise NotImplementedError
 
-    def flush(self):
+    def flush(self, timeout):
         raise NotImplementedError
 
 
@@ -645,7 +707,7 @@ class SerialInterface(Interface):
         self.serial.close()
 
     def write(self, payload: bytes) -> None:
-        logdbg(f"write [{len(payload)}]")
+        logdbg(f"write [{len(payload)}] - {payload}")
         self.serial.write(payload)
 
     def readline(self, eol: bytes):
@@ -656,17 +718,18 @@ class SerialInterface(Interface):
         logdbg(f"readline [{len(line)}] - {line}")
         return line
 
-    def flush(self):
+    def flush(self, timeout):
         pass
 
 
 class TcpInterface(Interface):
     MAX_CACHED_LINES = 1024
 
-    def __init__(self, host, port, timeout=20):
+    def __init__(self, host, port, timeout):
         super().__init__()
         self.host = host
         self.port = port
+        logdbg(f"Using timeout = {timeout}")
         self.timeout = timeout
         self.socket: socket.socket = None
         self.cached_lines = list()
@@ -692,37 +755,53 @@ class TcpInterface(Interface):
         else:
             raise ExceptionGroup("Failed to connect", [conn_ex])
 
+        # Preventive flush
+        self.flush(1)
+
     def write(self, payload: bytes) -> None:
-        logdbg(f"write [{len(payload)}]")
+        logdbg(f"write [{len(payload)}] - {payload}")
         self.socket.sendall(payload)
 
     def readline(self, eol: bytes):
         # daft readline implementation - it assumes received packets always
         # contain full lines, delimited by eol.
 
-        logdbg(f"Found {len(self.cached_lines)} cached lines")
         if self.cached_lines:
-            logdbg(f"Using cached line")
+            logdbg(
+                f"recv from cached lines - found {len(self.cached_lines)} cached lines"
+            )
             retline = self.cached_lines.pop(0)
         else:
-            logdbg(f"recv line")
-            try:
-                buf = self.buffered + self.socket.recv(512)
-            except TimeoutError as e:
-                logerr(f"recv timed out: {e}")
-                return b""
+            logdbg(f"recv a new line")
 
-            logdbg(f"readline [{len(buf)}] - {buf}")
+            retry_num = 0
+            buf = ""
+            for retry_num in range(Interface.MAX_RX_INCOMPLETE_RETRIES):
+                try:
+                    buf = self.buffered + self.socket.recv(512)
+                except TimeoutError as e:
+                    logerr(f"recv timed out: ({e})")
+                    return b""
 
-            # Do some checks. Probably a bit overkill ...
-            if buf.find(eol) == -1:
-                logerr(f"Buffer {buf} does not contain the EOL {eol}")
+                logdbg(f"readline [{len(buf)}] - {buf}")
+
+                # Check if there is a full line to handle
+                if buf.find(eol) >= 0:
+                    break
+
+                logwarn(
+                    f"Got incomplete line (no EOL) [{len(buf)}] - Buffering and retrying RX [retry {retry_num}/{Interface.MAX_RX_INCOMPLETE_RETRIES}]"
+                )
                 self.buffered = buf
-                return b""
+            else:
+                msg = f"readline - no more partial rx attempts left [{len(buf)}] - [retry {retry_num}/{Interface.MAX_RX_INCOMPLETE_RETRIES}]"
+                logerr(msg)
+                raise RuntimeError(msg)
 
             lines = buf.split(eol)
-
-            assert len(lines) > 0, "We found eol so there should be at least one line"
+            assert (
+                len(lines) > 0
+            ), "We found an EOL before, so there should be at least one line"
 
             # Whatever is left gets buffered. IF the packet ends with eol this
             # will be an empty string.
@@ -748,10 +827,10 @@ class TcpInterface(Interface):
     def close(self):
         self.socket.close()
 
-    def flush(self):
+    def flush(self, timeout):
         r = "1"
         try:
-            self.socket.settimeout(3)
+            self.socket.settimeout(timeout)
             while r:
                 r = self.socket.recv(512)
                 loginfo(f"Flushed {len(r)} bytes")
@@ -765,16 +844,16 @@ class StationAscii(Station):
     # ASCII over RS232, RS485, and RS422 defaults to 19200, 8, N, 1
     DEFAULT_BAUD = 19200
 
-    def __init__(self, interface, address):
-        super(StationAscii, self).__init__(interface, address)
+    def __init__(self, interface, address, use_crc):
+        super(StationAscii, self).__init__(interface, address, use_crc)
         self.terminator = "\r\n"
 
 
 class StationNMEA(Station):
     DEFAULT_BAUD = 4800
 
-    def __init__(self, interface, address):
-        super().__init__(interface, address)
+    def __init__(self, interface, address, use_crc):
+        super().__init__(interface, address, use_crc)
         self.terminator = "\r\n"
         raise NotImplementedError("NMEA support not implemented")
 
@@ -783,8 +862,8 @@ class StationSDI12(Station):
     # SDI12 defaults to 1200, 7, E, 1
     DEFAULT_BAUD = 1200
 
-    def __init__(self, interface, address):
-        super().__init__(interface, address)
+    def __init__(self, interface, address, use_crc):
+        super().__init__(interface, address, use_crc)
         self.terminator = "\r\n"
         raise NotImplementedError("SDI12 support not implemented")
 
@@ -905,12 +984,14 @@ class WXT5x0Driver(weewx.drivers.AbstractDevice):
             baud = sta_cls.DEFAULT_BAUD
             baud = int(stn_dict.get("baud", baud))
             port = stn_dict.get("port", SerialInterface.DEFAULT_PORT)
-            interface = SerialInterface(port, baud, 3)
+            timeout = stn_dict.get("timeout", Interface.DEFAULT_TIMEOUT)
+            interface = SerialInterface(port, baud, timeout)
         elif iface_name == "net":
             host = stn_dict.get("net_host")
             port = stn_dict.get("net_port", 0)
             port = int(port)
-            interface = TcpInterface(host, port)
+            timeout = stn_dict.get("timeout", Interface.DEFAULT_TIMEOUT)
+            interface = TcpInterface(host, port, timeout)
         else:
             raise RuntimeError(f"Not a valid interface {iface_name}")
 
@@ -1088,26 +1169,37 @@ if __name__ == "__main__":
     parser.add_option("--test-crc", metavar="STRING", help="verify the CRC calculation")
 
     parser.add_option(
+        "--use-crc",
+        action="store_true",
+        help="Use CRC on TX - validate CRC on RX",
+        default=False,
+    )
+
+    parser.add_option(
         "--interface", type=str, help="station interface", default="serial"
     )
     parser.add_option("--net_host", type=str, help="net_host", default="127.0.0.1")
     parser.add_option("--net_port", type=int, help="net port", default=2323)
+    parser.add_option(
+        "--timeout", type=float, help="RX timeout", default=Interface.DEFAULT_TIMEOUT
+    )
 
     (options, args) = parser.parse_args()
 
     log.setLevel(logging.DEBUG if options.debug else logging.INFO)
-    logdbg("test log dbg")
-    loginfo("test log info")
-    logwarn("test log warn")
-    logerr("test log err")
+    logdbg("TEST LOG - logdbg")
+    loginfo("TEST LOG - loginfo")
+    logwarn("TEST LOG - logwarn")
+    logerr("TEST LOG - logerr")
 
     if options.version:
         print("%s driver version %s" % (DRIVER_NAME, DRIVER_VERSION))
         exit(1)
 
     if options.test_crc:
-        print("string: '%s'" % options.test_crc)
-        print("crc: '%s'" % Station.calc_crc(options.test_crc))
+        print(
+            f"string: {options.test_crc} - CRC: '{Station.calc_crc(options.test_crc)}'"
+        )
         exit(0)
 
     if options.protocol == "ascii":
@@ -1123,11 +1215,11 @@ if __name__ == "__main__":
     if options.interface == "serial":
         interface = SerialInterface(options.serial_port, options.baud, 3)
     elif options.interface == "net":
-        interface = TcpInterface(options.net_host, options.net_port)
+        interface = TcpInterface(options.net_host, options.net_port, options.timeout)
     else:
         raise RuntimeError(f"Not a valid interface {options.interface}")
 
-    with sta_cls(interface, options.address) as s:
+    with sta_cls(interface, options.address, options.use_crc) as s:
         if options.get_wind:
             print("%s" % s.get_wind().strip())
         elif options.get_pth:
