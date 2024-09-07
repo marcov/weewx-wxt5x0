@@ -21,3 +21,6 @@ wee_config --reconfigure
 4) start weewx
 
 sudo /etc/init.d/weewx start
+
+# Vim setup
+export PYTHONPATH=$HOME/dev/weewx/bin/:$HOME/dev/weewx/src

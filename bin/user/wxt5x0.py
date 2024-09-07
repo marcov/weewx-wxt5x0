@@ -1020,9 +1020,9 @@ class WXT5x0Driver(weewx.drivers.AbstractDevice):
         return self._model
 
     def get_loop_packet(self):
-        data_msg = self._station.get_data_message(self._poll_interval)
+        data_msg : str = self._station.get_data_message(self._poll_interval)
         logdbg(f"data message ascii: {data_msg}")
-        logdbg(f"data message hex: {hexlify(data_msg)}")
+        logdbg(f"data message hex: {hexlify(data_msg.encode(encoding="utf-8"))}")
 
         if not data_msg:
             raise weewx.WeeWxIOError(f"Got empty data message")
@@ -1246,8 +1246,10 @@ if __name__ == "__main__":
         else:
             loginfo("Waiting for data ...")
             while True:
-                data = s.get_data_message(options.poll_interval)
-                parsed = Station.parse(data)
+                data_msg = s.get_data_message(options.poll_interval)
+                logdbg(f"data message ascii: {data_msg}")
+                logdbg(f"data message hex: {hexlify(data_msg.encode(encoding="utf-8"))}")
+                parsed = Station.parse(data_msg)
                 if parsed:
                     loginfo(f"{pprint.pformat(parsed)}")
                 else:
