@@ -9,10 +9,10 @@ def loader():
 class WXT5x0Installer(ExtensionInstaller):
     def __init__(self):
         super(WXT5x0Installer, self).__init__(
-            version="0.6",
+            version="2.0",
             name='wxt5x0',
-            description='Collect data from WXT5x0 hardware',
-            author="Matthew Wall",
-            author_email="mwall@users.sourceforge.net",
+            description='Vaisala WXT520 station driver (prev. Collect data from WXT5x0 hardware)',
+            author="Marco Vedovati (prev. Matthew Wall)",
+            author_email="mv@sba.lat (prev. mwall@users.sourceforge.net)",
             files=[('bin/user', ['bin/user/wxt5x0.py'])]
         )
