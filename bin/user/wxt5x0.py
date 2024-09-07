@@ -310,6 +310,9 @@ class Station(object):
 
                 logdbg(f"CRC check passed: '{received_crc}'")
 
+                # Strip CRC
+                resp = payload
+
             logdbg(
                 f"Response received is good [retry {retry_num}/{Station.MAX_RX_ERROR_RETRIES}]"
             )
