@@ -116,6 +116,13 @@ class Station(object):
     TARGET_UNIT = weewx.US
     CRC_LEN = 3
 
+    class BadAddress(Exception):
+        def __init__(self, rcvd_address, *args):
+            super().__init__(*args)
+            self.rcvd_address = rcvd_address
+
+        pass
+
     class MessageMode(Enum):
         Polled = auto()
         Auto = auto()
@@ -246,14 +253,14 @@ class Station(object):
     def __exit__(self, *_):
         self.close()
 
-    def tx_command(self, command: str, include_address: bool = True):
+    def tx_command(self, command: str, prepend_address: bool = True):
         """Send a command.
 
         command (str): string without address and terminator.
-        include_address (bool): if True, include the address in the TX.
+        prepend_address (bool): if True, include the address in the TX.
         """
 
-        if include_address:
+        if prepend_address:
             addr = self.address
         else:
             addr = ""
@@ -274,62 +281,83 @@ class Station(object):
         eol = self.terminator.encode(encoding="utf-8")
         line = self.interface.readline(eol=eol).decode(encoding="utf-8")
 
+        # Check address
+        rcvd_address = line[0]
+
+        if rcvd_address != self.address:
+            raise self.BadAddress(
+                rcvd_address,
+                f"Received address {rcvd_address} does not match configured address {self.address} - line: '{line}'",
+            )
+
         return line
 
     def send_and_receive(self, command: str | None = None) -> str:
         BAD_RESPONSES = ("Unknown cmd error", "Use chksum")
+        "UtX,Sync/address errorJRM"
 
         # Retry only if we can re-TX the command
         RETRIES_COUNT = Station.MAX_RX_ERROR_RETRIES if command else 1
         ith_retry = 0
-        for ith_retry in range(RETRIES_COUNT):
-            if command:
-                if ith_retry > 0:
-                    loginfo(f"Retrying TX ... [retry {ith_retry}/{RETRIES_COUNT}]")
-                self.tx_command(command)
+        try:
+            for ith_retry in range(RETRIES_COUNT):
+                if command:
+                    if ith_retry > 0:
+                        loginfo(f"Retrying TX ... [retry {ith_retry}/{RETRIES_COUNT}]")
+                    self.tx_command(command)
 
-            resp = self.rx_response()
+                resp = self.rx_response()
 
-            # We continue on any error, or break on success
-            if not resp:
-                logerr("Response is empty")
-                continue
-
-            if any(substr in resp for substr in BAD_RESPONSES):
-                logerr(f"Response is bad: '{resp}'")
-                continue
-
-            # Check CRC if enabled.
-            if self.use_crc:
-                if len(resp) <= Station.CRC_LEN:
-                    logerr(f"Response too short to contain a CRC: '{resp}'")
+                # We continue on any error, or break on success
+                if not resp:
+                    logerr("Response is empty")
                     continue
 
-                payload, received_crc = (
-                    resp[: -Station.CRC_LEN],
-                    resp[-Station.CRC_LEN :],
-                )
-                expected_crc = self.calc_crc(payload)
-                if received_crc != expected_crc:
-                    logerr(
-                        f"CRC check failed: expected '{expected_crc}' - received '{received_crc}'"
+                if any(substr in resp for substr in BAD_RESPONSES):
+                    logerr(f"Response is bad: '{resp}'")
+                    continue
+
+                # Check CRC if enabled.
+                if self.use_crc:
+                    if len(resp) <= Station.CRC_LEN:
+                        logerr(f"Response too short to contain a CRC: '{resp}'")
+                        continue
+
+                    payload, received_crc = (
+                        resp[: -Station.CRC_LEN],
+                        resp[-Station.CRC_LEN :],
                     )
-                    continue
+                    expected_crc = self.calc_crc(payload)
+                    if received_crc != expected_crc:
+                        logerr(
+                            f"CRC check failed: expected '{expected_crc}' - received '{received_crc}'"
+                        )
+                        continue
 
-                logdbg(f"CRC check passed: '{received_crc}'")
+                    logdbg(f"CRC check passed: '{received_crc}'")
 
-                # Strip CRC
-                resp = payload
+                    # Strip CRC
+                    resp = payload
 
-            logdbg(f"Response received is good [retry {ith_retry}/{RETRIES_COUNT}]")
-            break
+                logdbg(f"Response received is good [retry {ith_retry}/{RETRIES_COUNT}]")
+                break
 
-        else:
-            msg = f"send_and_receive failed [retry {ith_retry}/{RETRIES_COUNT}]"
-            logerr(msg)
-            raise RuntimeError(msg)
+            else:
+                msg = f"send_and_receive failed [retry {ith_retry}/{RETRIES_COUNT}]"
+                logerr(msg)
+                raise RuntimeError(msg)
+
+        except self.BadAddress as ex:
+            logwarn(ex)
+            self.set_address(ex.rcvd_address)
+            resp = ""
 
         return resp
+
+    def set_address(self, curr_address):
+        loginfo(f"Setting address to {self.address}")
+        self.tx_command(f"{curr_address}XU,A={self.address}", False)
+        self.rx_response()
 
     def precip_counter_reset(self):
         self.send_and_receive("XZRU")
@@ -343,12 +371,12 @@ class Station(object):
 
     def set_automatic_mode(self):
         loginfo("set auto mode")
-        self.send_and_receive("XU,M=A")
+        self.send_and_receive(f"XU,A={self.address},M=A")
         self.message_mode = self.MessageMode.Auto
 
     def set_polled_mode(self):
         poll_mode = "p" if self.use_crc else "P"
-        self.send_and_receive(f"XU,M={poll_mode}")
+        self.send_and_receive(f"XU,A={self.address},M={poll_mode}")
         self.message_mode = self.MessageMode.Polled
 
     def get_wind(self):
