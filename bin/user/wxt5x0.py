@@ -284,11 +284,9 @@ class Station(object):
         # Check address
         rcvd_address = line[0]
 
-        if rcvd_address != self.address:
-            raise self.BadAddress(
-                rcvd_address,
-                f"Received address {rcvd_address} does not match configured address {self.address} - line: '{line}'",
-            )
+        if rcvd_address != str(self.address):
+            logerr(f"Received address '{rcvd_address}' != configured address '{self.address}' - line: '{line}'")
+            raise self.BadAddress(rcvd_address)
 
         return line
 
