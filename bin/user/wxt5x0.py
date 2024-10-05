@@ -263,7 +263,9 @@ class Station(object):
         if prepend_address:
             addr = self.address
         else:
-            addr = ""
+            # Take the address from the command
+            addr = command[0]
+            command = command[1:]
 
         # For CRC, the first command letter must be lowercase
         if self.use_crc:
